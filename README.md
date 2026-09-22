@@ -4,10 +4,11 @@
 
 ![Tech](https://img.shields.io/badge/Tauri-2-blue) ![Vue](https://img.shields.io/badge/Vue-3-brightgreen) ![License](https://img.shields.io/badge/License-MIT-yellow)
 
-<!-- 截图占位：发布前补充 screenshots/ 目录截图
-![主界面](screenshots/main.png)
-![便签](screenshots/sticky.png)
--->
+## 📸 界面预览
+
+| 主界面（日历视图） | 桌面便签 | 便签贴边拉手 |
+|---|---|---|
+| ![主界面](screenshots/main.png) | ![便签](screenshots/sticky.png) | ![贴边](screenshots/sticky-dock.png) |
 
 ## ✨ 功能特性
 
