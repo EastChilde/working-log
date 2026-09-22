@@ -1,0 +1,115 @@
+<script setup lang="ts">
+import { computed, onMounted, ref } from "vue";
+import { useTaskStore, todayKey } from "./stores/tasks";
+import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
+import CalendarView from "./components/CalendarView.vue";
+import ListView from "./components/ListView.vue";
+import DayPanel from "./components/DayPanel.vue";
+import HistoryView from "./components/HistoryView.vue";
+
+const store = useTaskStore();
+const view = ref<"cal" | "list" | "hist">("cal");
+const year = ref(new Date().getFullYear());
+const month = ref(new Date().getMonth() + 1);
+const selected = ref(todayKey());
+const today = todayKey();
+
+onMounted(() => store.initSync());
+
+function shiftMonth(n: number) {
+  month.value += n;
+  if (month.value > 12) { month.value = 1; year.value++; }
+  if (month.value < 1) { month.value = 12; year.value--; }
+}
+function goToday() {
+  const d = new Date();
+  year.value = d.getFullYear(); month.value = d.getMonth() + 1; selected.value = today;
+}
+
+const quickInput = ref("");
+async function quickAdd() {
+  if (!quickInput.value.trim()) return;
+  await store.add(quickInput.value, selected.value || today);
+  quickInput.value = "";
+}
+
+const sideToday = computed(() => store.tasks.filter((t) => t.created_at === today && t.status !== "done").length);
+const sideStay = computed(() => store.openTasks.filter((t) => t.created_at < today).length);
+const inboxCount = computed(() => 0);
+
+/** 顶栏切换便签窗口显示/隐藏 */
+const stickyBtn = ref<"show" | "hide">("show");
+async function toggleSticky() {
+  const w = await WebviewWindow.getByLabel("sticky");
+  if (!w) return;
+  if (await w.isVisible()) {
+    await w.hide();
+    stickyBtn.value = "show";
+  } else {
+    await w.show();
+    await w.setFocus();
+    stickyBtn.value = "hide";
+  }
+}
+</script>
+
+<template>
+  <div class="topbar">
+    <div class="logo"><div class="dot">清</div>工作清单助手</div>
+    <div class="seg">
+      <button :class="{ on: view === 'cal' }" @click="view = 'cal'">📅 日历</button>
+      <button :class="{ on: view === 'list' }" @click="view = 'list'">📋 清单</button>
+      <button :class="{ on: view === 'hist' }" @click="view = 'hist'">📈 回顾</button>
+    </div>
+    <div class="month-nav">
+      <button @click="shiftMonth(-1)">‹</button>
+      <b>{{ year }}年{{ month }}月</b>
+      <button @click="shiftMonth(1)">›</button>
+    </div>
+    <button class="icon-btn today-chip" @click="goToday">今天</button>
+    <button class="icon-btn sticky-toggle" :class="{ off: stickyBtn === 'show' }" @click="toggleSticky">
+      🗒 便签
+    </button>
+    <div class="spacer"></div>
+    <span class="mode-hint">{{ store.loaded ? '' : '加载中…' }}</span>
+  </div>
+
+  <div class="layout">
+    <div class="sidebar">
+      <div class="side-item on">🗂 全部任务</div>
+      <div class="side-item">☀️ 今日待办 <span class="cnt">{{ sideToday }}</span></div>
+      <div class="side-item">⏳ 滞留任务 <span class="cnt">{{ sideStay }}</span></div>
+      <div class="side-sec">标签</div>
+      <div class="side-item">💻 开发 <span class="cnt">—</span></div>
+      <div class="side-item">📄 文档 <span class="cnt">—</span></div>
+      <div class="side-item">🗣 会议 <span class="cnt">—</span></div>
+      <div class="side-sec">回顾</div>
+      <div class="side-item" :class="{ on: view === 'hist' }" @click="view = 'hist'">📈 年度统计</div>
+      <div class="side-item" :class="{ on: view === 'hist' }" @click="view = 'hist'">📤 年终总结导出</div>
+      <div class="legend">
+        <span><i style="background: var(--green)"></i>全部完成</span>
+        <span><i style="background: var(--yellow)"></i>部分完成</span>
+        <span><i style="background: var(--red)"></i>全部未完成</span>
+        <span><i style="background: #c9d2e0"></i>当天无任务</span>
+      </div>
+    </div>
+
+    <div class="view" :class="{ on: view === 'cal' }">
+      <CalendarView :year="year" :month="month" :selected="selected" :today="today" @select="selected = $event" />
+    </div>
+
+    <div class="view" :class="{ on: view === 'list' }">
+      <div class="quick-add">
+        <input v-model="quickInput" placeholder="回车快速添加任务到选中日期…" @keydown.enter="quickAdd" />
+        <button @click="quickAdd">＋ 添加</button>
+      </div>
+      <ListView />
+    </div>
+
+    <div class="view" :class="{ on: view === 'hist' }">
+      <HistoryView />
+    </div>
+
+    <DayPanel :selected="selected" :today="today" v-if="view !== 'hist'" />
+  </div>
+</template>
