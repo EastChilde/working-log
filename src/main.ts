@@ -3,6 +3,12 @@ import { createPinia } from "pinia";
 import App from "./App.vue";
 import "./styles.css";
 
+// 防闪烁：挂载前同步应用已保存的主题
+const savedTheme = localStorage.getItem("workinglog-theme");
+if (savedTheme === "dark" || savedTheme === "light") {
+  document.documentElement.setAttribute("data-theme", savedTheme);
+}
+
 // 诊断：把未捕获错误写入窗口标题，便于从 tasklist /V 观察
 window.addEventListener("error", (e) => {
   document.title = "ERR: " + e.message;

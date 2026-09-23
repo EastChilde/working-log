@@ -37,6 +37,18 @@ const sideToday = computed(() => store.tasks.filter((t) => t.created_at === toda
 const sideStay = computed(() => store.openTasks.filter((t) => t.created_at < today).length);
 const inboxCount = computed(() => 0);
 
+/** 主题：light / dark，存 localStorage，启动即应用（防闪烁在 main.ts 同步处理） */
+const theme = ref<"light" | "dark">((localStorage.getItem("workinglog-theme") as "light" | "dark") || "light");
+function applyTheme(t: "light" | "dark") {
+  theme.value = t;
+  document.documentElement.setAttribute("data-theme", t);
+  localStorage.setItem("workinglog-theme", t);
+}
+function toggleTheme() {
+  applyTheme(theme.value === "dark" ? "light" : "dark");
+}
+applyTheme(theme.value);
+
 /** 顶栏切换便签窗口显示/隐藏 */
 const stickyBtn = ref<"show" | "hide">("show");
 async function toggleSticky() {
@@ -69,6 +81,9 @@ async function toggleSticky() {
     <button class="icon-btn today-chip" @click="goToday">今天</button>
     <button class="icon-btn sticky-toggle" :class="{ off: stickyBtn === 'show' }" @click="toggleSticky">
       🗒 便签
+    </button>
+    <button class="icon-btn theme-btn" :title="theme === 'dark' ? '切换到浅色' : '切换到深色'" @click="toggleTheme">
+      {{ theme === 'dark' ? '☀️' : '🌙' }}
     </button>
     <div class="spacer"></div>
     <span class="mode-hint">{{ store.loaded ? '' : '加载中…' }}</span>
