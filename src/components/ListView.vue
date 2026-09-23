@@ -31,7 +31,7 @@ function rowMeta(t: Task): { text: string; cls: string }[] {
     meta.push({ text: `已滞留 ${daysBetween(t.created_at, today.value)} 天`, cls: "stay" });
   if (t.deadline && t.status !== "done") {
     const left = daysBetween(today.value, t.deadline);
-    meta.push(left < 0 ? { text: `已逾期 ${-left} 天（截止 ${t.deadline.slice(5)}）`, cls: "over" } : { text: `🚩 截止 ${t.deadline.slice(5)}（剩 ${left} 天）`, cls: "stay" });
+    meta.push(left < 0 ? { text: `已逾期 ${-left} 天（预计 ${t.deadline.slice(5)} 结束）`, cls: "over" } : { text: `预计 ${t.deadline.slice(5)} 结束（剩 ${left} 天）`, cls: "stay" });
   }
   if (t.status === "done" && t.completed_at)
     meta.push({ text: `${t.created_at.slice(5)} 创建 → ${t.completed_at.slice(5)} 完成（${daysBetween(t.created_at, t.completed_at)} 天）`, cls: "ok" });
@@ -45,11 +45,12 @@ function rowMeta(t: Task): { text: string; cls: string }[] {
     <div class="st-title">⏳ 未完成 · 往日滞留 {{ stay.length }} 项（不会沉底）</div>
     <div v-for="t in stay" :key="t.id" class="task" :class="{ done: t.status === 'done' }">
       <div class="chk" :class="{ on: t.status === 'done' }" @click="store.toggle(t.id)">{{ t.status === 'done' ? '✓' : '' }}</div>
-      <div class="t-main">
+      <div class="t-main" @click="store.openEditor(t)">
         <div class="t-title">{{ t.title }}</div>
         <div class="t-meta"><span v-for="(m, i) in rowMeta(t)" :key="i" :class="m.cls">{{ m.text }}</span></div>
         <div v-if="t.children" class="kids"></div>
       </div>
+      <button class="t-edit" title="编辑任务" @click.stop="store.openEditor(t)">✎</button>
       <button class="del" title="删除" @click="store.remove(t.id)">✕</button>
     </div>
   </div>
@@ -58,10 +59,11 @@ function rowMeta(t: Task): { text: string; cls: string }[] {
   <div class="group-head"><b>☀️ 今天（{{ today.slice(5) }}）</b><span>{{ todayList.filter(t => t.status === 'done').length }}/{{ todayList.length }} 完成</span><div class="line"></div></div>
   <div v-for="t in todayList" :key="t.id" class="task" :class="{ done: t.status === 'done' }">
     <div class="chk" :class="{ on: t.status === 'done' }" @click="store.toggle(t.id)">{{ t.status === 'done' ? '✓' : '' }}</div>
-    <div class="t-main">
+    <div class="t-main" @click="store.openEditor(t)">
       <div class="t-title">{{ t.title }}</div>
       <div class="t-meta"><span v-for="(m, i) in rowMeta(t)" :key="i" :class="m.cls">{{ m.text }}</span></div>
     </div>
+    <button class="t-edit" title="编辑任务" @click.stop="store.openEditor(t)">✎</button>
     <button class="del" title="删除" @click="store.remove(t.id)">✕</button>
   </div>
   <div v-if="!todayList.length" class="empty">今天还没有任务，上方输入框快速添加</div>
@@ -75,10 +77,11 @@ function rowMeta(t: Task): { text: string; cls: string }[] {
     </div>
     <div v-for="t in store.tasks.filter(t => t.created_at === k)" :key="t.id" class="task" :class="{ done: t.status === 'done' }">
       <div class="chk" :class="{ on: t.status === 'done' }" @click="store.toggle(t.id)">{{ t.status === 'done' ? '✓' : '' }}</div>
-      <div class="t-main">
+      <div class="t-main" @click="store.openEditor(t)">
         <div class="t-title">{{ t.title }}</div>
         <div class="t-meta"><span v-for="(m, i) in rowMeta(t)" :key="i" :class="m.cls">{{ m.text }}</span></div>
       </div>
+      <button class="t-edit" title="编辑任务" @click.stop="store.openEditor(t)">✎</button>
       <button class="del" title="删除" @click="store.remove(t.id)">✕</button>
     </div>
   </template>

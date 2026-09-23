@@ -23,10 +23,12 @@ async function broadcast() {
 interface State {
   tasks: Task[];
   loaded: boolean;
+  /** 新增/编辑弹窗状态：mode=add 时 date 为归属创建日；mode=edit 时 task 必有 */
+  editor: { open: boolean; mode: "add" | "edit"; date: string; task: Task | null };
 }
 
 export const useTaskStore = defineStore("tasks", {
-  state: (): State => ({ tasks: [], loaded: false }),
+  state: (): State => ({ tasks: [], loaded: false, editor: { open: false, mode: "add", date: todayKey(), task: null } }),
 
   getters: {
     /** 已完成任务按完成日期索引：key = completed_at */
@@ -88,7 +90,7 @@ export const useTaskStore = defineStore("tasks", {
       this.loaded = true;
     },
 
-    async add(title: string, dateKey: string, parent: Task | null = null, priority: Task["priority"] = null) {
+    async add(title: string, dateKey: string, parent: Task | null = null, priority: Task["priority"] = null, deadline: string | null = null) {
       if (!title.trim()) return;
       const t = await repo.insert({
         title: title.trim(),
@@ -96,13 +98,30 @@ export const useTaskStore = defineStore("tasks", {
         status: "todo",
         priority,
         tag: null,
-        deadline: null,
+        deadline,
         created_at: dateKey,
         completed_at: null,
         sort: this.tasks.length,
       });
       this.tasks.push(t);
       await broadcast();
+    },
+
+    /** 编辑任务：标题 / 预计结束日期 / 紧急级别 */
+    async updateTask(id: string, patch: { title?: string; deadline?: string | null; priority?: Task["priority"] }) {
+      await repo.update(id, patch);
+      const t = this.tasks.find((x) => x.id === id);
+      if (t) Object.assign(t, patch);
+      await broadcast();
+    },
+
+    /* ---------- 新增/编辑弹窗 ---------- */
+    openEditor(arg: string | Task): void {
+      if (typeof arg === "string") this.editor = { open: true, mode: "add", date: arg, task: null };
+      else this.editor = { open: true, mode: "edit", date: arg.created_at, task: arg };
+    },
+    closeEditor() {
+      this.editor = { ...this.editor, open: false };
     },
 
     /** 设置紧急级别（高/中/低/null 循环或直接指定） */

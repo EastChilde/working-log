@@ -7,6 +7,7 @@ import CalendarView from "./components/CalendarView.vue";
 import ListView from "./components/ListView.vue";
 import DayPanel from "./components/DayPanel.vue";
 import HistoryView from "./components/HistoryView.vue";
+import TaskModal from "./components/TaskModal.vue";
 
 const store = useTaskStore();
 const view = ref<"cal" | "list" | "hist">("cal");
@@ -171,4 +172,6 @@ async function winClose() {
 
     <DayPanel :selected="selected" :today="today" v-if="view !== 'hist'" />
   </div>
+
+  <TaskModal />
 </template>

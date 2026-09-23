@@ -7,7 +7,7 @@ const props = defineProps<{ year: number; month: number; selected: string; today
 const emit = defineEmits<{ (e: "select", key: string): void }>();
 const store = useTaskStore();
 
-interface Cell { key: string; day: number; dim: boolean; created: number; done: number; hasDeadline: boolean; overdue: boolean; top: { title: string; done: boolean; pri: string | null }[] }
+interface Cell { key: string; day: number; dim: boolean; created: number; done: number; hasDeadline: boolean; overdue: boolean; top: { id: string; title: string; done: boolean; pri: string | null }[] }
 const cells = computed<Cell[]>(() =>
   monthGrid(props.year, props.month).map((c) => {
     const created = (store.byCreatedDate[c.key] || []).length;
@@ -18,7 +18,7 @@ const cells = computed<Cell[]>(() =>
     const top = store.tasks
       .filter((t) => t.created_at === c.key)
       .slice(0, 2)
-      .map((t) => ({ title: t.title, done: t.status === "done", pri: t.priority }));
+      .map((t) => ({ id: t.id, title: t.title, done: t.status === "done", pri: t.priority }));
     return { ...c, created, done, hasDeadline, overdue, top };
   }),
 );
@@ -33,6 +33,12 @@ function badgeClass(c: Cell) {
 /* 紧急级别 → 圆点样式 */
 function priCls(p: string | null) {
   return p === "高" ? "hi" : p === "中" ? "mid" : p === "低" ? "low" : "none";
+}
+
+/* 点日历任务条 → 打开编辑弹窗 */
+function openById(id: string) {
+  const t = store.tasks.find((x) => x.id === id);
+  if (t) store.openEditor(t);
 }
 
 /* 悬浮提示：显示当日完整任务列表 */
@@ -90,9 +96,10 @@ function tipTop() {
         <span v-if="c.overdue" class="flag" title="有截止任务">🚩</span>
         <span class="badge" :class="badgeClass(c)">{{ c.created ? c.done + '/' + c.created : '—' }}</span>
       </div>
-      <div v-for="(t, i) in c.top" :key="i" class="t" :class="{ done: t.done }">
+      <div v-for="(t, i) in c.top" :key="i" class="t" :class="{ done: t.done }" :title="'点击编辑：' + t.title" @click.stop="openById(t.id)">
         <span v-if="t.pri" class="pri-dot" :class="priCls(t.pri)" :title="'紧急级别：' + t.pri"></span>
         <span class="txt">{{ t.done ? '✓ ' : '' }}{{ t.title }}</span>
+        <span class="t-edit-ico">✎</span>
       </div>
       <div v-if="c.created > 2" class="t more">还有 {{ c.created - 2 }} 项…</div>
     </div>
