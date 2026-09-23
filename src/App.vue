@@ -1,5 +1,6 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from "vue";
+import { computed, onMounted, onUnmounted, ref } from "vue";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 import { useTaskStore, todayKey } from "./stores/tasks";
 import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
 import CalendarView from "./components/CalendarView.vue";
@@ -70,11 +71,35 @@ async function toggleSticky() {
     stickyBtn.value = "hide";
   }
 }
+
+/** 无边框窗口控制：最小化 / 最大化还原 / 关闭（关闭走 Rust 端拦截 → 隐藏到托盘） */
+const isMax = ref(false);
+let unlistenResize: (() => void) | null = null;
+onMounted(async () => {
+  try {
+    const win = getCurrentWindow();
+    isMax.value = await win.isMaximized();
+    unlistenResize = await win.onResized(async () => {
+      try { isMax.value = await win.isMaximized(); } catch { /* ignore */ }
+    });
+  } catch { /* 非 Tauri 环境忽略 */ }
+});
+onUnmounted(() => unlistenResize?.());
+
+async function winMinimize() {
+  await getCurrentWindow().minimize();
+}
+async function winToggleMaximize() {
+  await getCurrentWindow().toggleMaximize();
+}
+async function winClose() {
+  await getCurrentWindow().close(); // Rust 端 CloseRequested 已拦截为隐藏，托盘驻留
+}
 </script>
 
 <template>
-  <div class="topbar">
-    <div class="logo"><div class="dot">清</div>工作清单助手</div>
+  <div class="topbar" data-tauri-drag-region>
+    <div class="logo" data-tauri-drag-region><div class="dot">清</div>工作清单助手</div>
     <div class="seg">
       <button :class="{ on: view === 'cal' }" @click="view = 'cal'">📅 日历</button>
       <button :class="{ on: view === 'list' }" @click="view = 'list'">📋 清单</button>
@@ -92,8 +117,20 @@ async function toggleSticky() {
     <button class="icon-btn theme-btn" :title="theme === 'dark' ? '切换到浅色' : '切换到深色'" @click="toggleTheme">
       {{ theme === 'dark' ? '☀️' : '🌙' }}
     </button>
-    <div class="spacer"></div>
+    <div class="spacer" data-tauri-drag-region></div>
     <span class="mode-hint">{{ store.loaded ? '' : '加载中…' }}</span>
+    <div class="win-controls">
+      <button class="win-btn" title="最小化" @click="winMinimize">
+        <svg width="10" height="10" viewBox="0 0 10 10"><path d="M1 5h8" stroke="currentColor" stroke-width="1.2" fill="none"/></svg>
+      </button>
+      <button class="win-btn" :title="isMax ? '还原' : '最大化'" @click="winToggleMaximize">
+        <svg v-if="!isMax" width="10" height="10" viewBox="0 0 10 10"><rect x="1.5" y="1.5" width="7" height="7" rx="1" stroke="currentColor" stroke-width="1.2" fill="none"/></svg>
+        <svg v-else width="10" height="10" viewBox="0 0 10 10"><rect x="1" y="3" width="6" height="6" rx="1" stroke="currentColor" stroke-width="1.2" fill="none"/><path d="M3.5 3V2a1 1 0 0 1 1-1H8a1 1 0 0 1 1 1v3.5a1 1 0 0 1-1 1H7" stroke="currentColor" stroke-width="1.2" fill="none"/></svg>
+      </button>
+      <button class="win-btn win-close" title="关闭" @click="winClose">
+        <svg width="10" height="10" viewBox="0 0 10 10"><path d="M1.5 1.5l7 7M8.5 1.5l-7 7" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/></svg>
+      </button>
+    </div>
   </div>
 
   <div class="layout">
