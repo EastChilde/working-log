@@ -106,6 +106,8 @@ body{background:var(--bg);color:var(--text);overflow:hidden;font-size:13px;}
 .t-main{flex:1;min-width:0;}
 .t-title{font-weight:600;}
 .task.done .t-title{text-decoration:line-through;color:#9aa3b2;font-weight:400;}
+/* 当日面板不划线：完成态用 ✓ 与灰色弱化表达，划线仅保留在日历格子 */
+.dp-body .task.done .t-title{text-decoration:none;color:#9aa3b2;}
 .t-meta{font-size:11px;color:var(--text2);margin-top:3px;display:flex;gap:10px;flex-wrap:wrap;}
 .t-meta .stay{color:var(--yellow);font-weight:600;}
 .t-meta .over{color:var(--red);font-weight:600;}
