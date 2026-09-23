@@ -11,11 +11,12 @@ interface Cell { key: string; day: number; dim: boolean; created: number; done: 
 const cells = computed<Cell[]>(() =>
   monthGrid(props.year, props.month).map((c) => {
     const created = (store.byCreatedDate[c.key] || []).length;
-    const done = store.doneByDate[c.key] || 0;
+    const done = (store.byCreatedDate[c.key] || []).filter((t) => t.status === "done").length;
     const hasDeadline = store.openTasks.some((t) => t.deadline === c.key);
     const overdue = hasDeadline && daysBetween(props.today, c.key) <= 0;
+    // 任务只归属创建日：完成划线显示在创建那天，完成日不重复显示
     const top = store.tasks
-      .filter((t) => t.created_at === c.key || (t.status === "done" && t.completed_at === c.key))
+      .filter((t) => t.created_at === c.key)
       .slice(0, 2)
       .map((t) => ({ title: t.title, done: t.status === "done", pri: t.priority }));
     return { ...c, created, done, hasDeadline, overdue, top };
@@ -39,12 +40,12 @@ const tip = ref<{ x: number; y: number; key: string } | null>(null);
 const tipTasks = computed(() =>
   tip.value
     ? store.tasks
-        .filter((t) => t.created_at === tip.value!.key || (t.status === "done" && t.completed_at === tip.value!.key))
+        .filter((t) => t.created_at === tip.value!.key)
         .map((t) => ({ id: t.id, title: t.title, done: t.status === "done", pri: t.priority }))
     : [],
 );
 function dayCount(key: string) {
-  return store.tasks.filter((t) => t.created_at === key || (t.status === "done" && t.completed_at === key)).length;
+  return (store.byCreatedDate[key] || []).length;
 }
 function onEnter(e: MouseEvent, c: Cell) {
   if (c.dim || !dayCount(c.key)) return;
