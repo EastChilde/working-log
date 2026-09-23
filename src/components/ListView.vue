@@ -24,7 +24,9 @@ const pastDates = computed(() =>
 function rowMeta(t: Task): { text: string; cls: string }[] {
   const meta: { text: string; cls: string }[] = [];
   if (t.tag) meta.push({ text: t.tag, cls: "pill p-tag" });
-  if (t.priority === "高") meta.push({ text: "高优先级", cls: "pill p-hi" });
+  if (t.priority === "高") meta.push({ text: "紧急 · 高", cls: "pill p-hi" });
+  if (t.priority === "中") meta.push({ text: "紧急 · 中", cls: "pill p-mid" });
+  if (t.priority === "低") meta.push({ text: "紧急 · 低", cls: "pill p-low" });
   if (t.status !== "done" && t.created_at < today.value)
     meta.push({ text: `已滞留 ${daysBetween(t.created_at, today.value)} 天`, cls: "stay" });
   if (t.deadline && t.status !== "done") {

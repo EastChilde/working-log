@@ -88,13 +88,13 @@ export const useTaskStore = defineStore("tasks", {
       this.loaded = true;
     },
 
-    async add(title: string, dateKey: string, parent: Task | null = null) {
+    async add(title: string, dateKey: string, parent: Task | null = null, priority: Task["priority"] = null) {
       if (!title.trim()) return;
       const t = await repo.insert({
         title: title.trim(),
         parent_id: parent ? parent.id : null,
         status: "todo",
-        priority: null,
+        priority,
         tag: null,
         deadline: null,
         created_at: dateKey,
@@ -102,6 +102,14 @@ export const useTaskStore = defineStore("tasks", {
         sort: this.tasks.length,
       });
       this.tasks.push(t);
+      await broadcast();
+    },
+
+    /** 设置紧急级别（高/中/低/null 循环或直接指定） */
+    async setPriority(id: string, priority: Task["priority"]) {
+      await repo.update(id, { priority });
+      const t = this.tasks.find((x) => x.id === id);
+      if (t) t.priority = priority;
       await broadcast();
     },
 
