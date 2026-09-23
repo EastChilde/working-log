@@ -1,0 +1,39 @@
+name: Release
+
+# 推送 v* 标签时自动构建 Windows 安装包并发布 Release
+on:
+  push:
+    tags:
+      - "v*"
+
+jobs:
+  release:
+    permissions:
+      contents: write
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: 安装前端依赖
+        run: npm install
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - name: 构建并发布 Release
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tagName: ${{ github.ref_name }}
+          releaseName: "工作清单助手 ${{ github.ref_name }}"
+          releaseBody: "本次版本变更详见提交记录与 README"
+          releaseDraft: false
+          prerelease: false
