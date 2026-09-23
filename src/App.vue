@@ -39,10 +39,17 @@ const inboxCount = computed(() => 0);
 
 /** 主题：light / dark，存 localStorage，启动即应用（防闪烁在 main.ts 同步处理） */
 const theme = ref<"light" | "dark">((localStorage.getItem("workinglog-theme") as "light" | "dark") || "light");
-function applyTheme(t: "light" | "dark") {
+async function applyTheme(t: "light" | "dark") {
   theme.value = t;
   document.documentElement.setAttribute("data-theme", t);
   localStorage.setItem("workinglog-theme", t);
+  // 同步原生窗口主题，让 Windows 标题栏跟随深浅色
+  try {
+    const { getCurrentWindow } = await import("@tauri-apps/api/window");
+    await getCurrentWindow().setTheme(t);
+  } catch {
+    /* 非 Tauri 环境忽略 */
+  }
 }
 function toggleTheme() {
   applyTheme(theme.value === "dark" ? "light" : "dark");
