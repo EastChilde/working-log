@@ -6,7 +6,7 @@
 //   2. message 用 git cat-file 提取（空行之后的原始字节），不要用 %B
 //      （bash shim 下 %B 输出会被加引号+多一个换行，SHA 必错）
 //   3. 重置远端 ref 回退时 PATCH 也要 force:true
-import { execSync } from "node:child_process";
+import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 
 const CWD = "D:/projects/todo/working-log";
@@ -14,7 +14,7 @@ const sha = process.argv[2];
 const branch = process.argv[3] || "main";
 if (!sha) { console.error("usage: node git-push-via-api.mjs <sha> [branch]"); process.exit(1); }
 
-const raw = execSync(`git cat-file commit ${sha}`, { cwd: CWD }).toString("utf8");
+const raw = execFileSync("git", ["cat-file", "commit", sha], { cwd: CWD }).toString("utf8");
 const headerEnd = raw.indexOf("\n\n");
 const header = raw.slice(0, headerEnd);
 const message = raw.slice(headerEnd + 2); // 精确保留尾随换行
@@ -40,12 +40,14 @@ function parseIdent(line) {
 const author = parseIdent(getHeader("author"));
 const committer = parseIdent(getHeader("committer"));
 
-const changed = execSync(`git diff-tree --no-commit-id --name-status -r ${sha}`, { cwd: CWD, encoding: "utf8" })
+const changed = execFileSync("git", ["diff-tree", "--no-commit-id", "--name-status", "-r", sha], { cwd: CWD, encoding: "utf8" })
   .split("\n").filter(Boolean)
   .map(l => { const [st, ...p] = l.split("\t"); return { status: st, path: p.join("\t") }; });
 
 // 取 token（git credential 助手）
-const cred = execSync("git credential fill", { cwd: CWD, encoding: "utf8", input: `protocol=https\nhost=github.com\n\n` });
+const cred = execFileSync("git", ["credential", "fill"], { cwd: CWD, encoding: "utf8", input: `protocol=https
+host=github.com
+` });
 const token = cred.split("\n").find(l => l.startsWith("password="))?.slice(9);
 if (!token) { console.error("NO_TOKEN"); process.exit(1); }
 
@@ -79,7 +81,7 @@ for (const f of changed) {
 
 // 2. 基于父提交的 tree 建新 tree
 const baseTree = getHeader("tree") && parents.length ? tree : tree; // base = 父提交 tree
-const parentTree = execSync(`git cat-file commit ${parents[0]}`, { cwd: CWD, encoding: "utf8" })
+const parentTree = execFileSync("git", ["cat-file", "commit", parents[0]], { cwd: CWD, encoding: "utf8" })
   .split("\n").find(l => l.startsWith("tree ")).slice(5).trim();
 const t = await api("/git/trees", { base_tree: parentTree, tree: treeItems });
 console.log("tree", t.sha, "match:", t.sha === tree);
