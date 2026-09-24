@@ -3,6 +3,7 @@ import { computed, onMounted, onUnmounted, ref } from "vue";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { useTaskStore, todayKey } from "./stores/tasks";
 import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
+import { TAG_HEX } from "./types";
 import CalendarView from "./components/CalendarView.vue";
 import ListView from "./components/ListView.vue";
 import DayPanel from "./components/DayPanel.vue";
@@ -38,6 +39,16 @@ async function quickAdd() {
 const sideToday = computed(() => store.tasks.filter((t) => t.created_at === today && t.status !== "done").length);
 const sideStay = computed(() => store.openTasks.filter((t) => t.created_at < today).length);
 const inboxCount = computed(() => 0);
+
+/** 标签下未完成任务数（侧栏角标） */
+function openCountByTag(id: string) {
+  return store.openTasks.filter((t) => t.tags.includes(id)).length;
+}
+/** 删除标签：任务上的引用一并移除（数据库层已兜底） */
+async function delTag(tag: { id: string; name: string }) {
+  if (!window.confirm(`删除标签「${tag.name}」？任务不会删除，仅摘除该标签。`)) return;
+  await store.removeTag(tag.id);
+}
 
 /** 主题：light / dark，存 localStorage，启动即应用（防闪烁在 main.ts 同步处理） */
 const theme = ref<"light" | "dark">((localStorage.getItem("workinglog-theme") as "light" | "dark") || "light");
@@ -136,13 +147,23 @@ async function winClose() {
 
   <div class="layout">
     <div class="sidebar">
-      <div class="side-item on">🗂 全部任务</div>
+      <div class="side-item" :class="{ on: !store.activeTag }" @click="store.activeTag = null">🗂 全部任务</div>
       <div class="side-item">☀️ 今日待办 <span class="cnt">{{ sideToday }}</span></div>
       <div class="side-item">⏳ 滞留任务 <span class="cnt">{{ sideStay }}</span></div>
-      <div class="side-sec">标签</div>
-      <div class="side-item">💻 开发 <span class="cnt">—</span></div>
-      <div class="side-item">📄 文档 <span class="cnt">—</span></div>
-      <div class="side-item">🗣 会议 <span class="cnt">—</span></div>
+      <div class="side-sec"><span>标签</span></div>
+      <div
+        v-for="tag in store.tags"
+        :key="tag.id"
+        class="side-tag"
+        :class="{ on: store.activeTag === tag.id }"
+        :title="store.activeTag === tag.id ? '再次点击取消筛选' : '点击只看「' + tag.name + '」的任务'"
+        @click="store.toggleTagFilter(tag.id)"
+      >
+        <i class="sd" :style="{ background: TAG_HEX[tag.color] }"></i>{{ tag.name }}
+        <span class="cnt">{{ openCountByTag(tag.id) }}</span>
+        <button class="side-tag-del" title="删除标签（任务保留，仅摘除标签）" @click.stop="delTag(tag)">✕</button>
+      </div>
+      <div v-if="!store.tags.length" class="side-tag-empty">暂无标签<br />编辑任务时点「＋ 新建标签」创建</div>
       <div class="side-sec">回顾</div>
       <div class="side-item" :class="{ on: view === 'hist' }" @click="view = 'hist'">📈 年度统计</div>
       <div class="side-item" :class="{ on: view === 'hist' }" @click="view = 'hist'">📤 年终总结导出</div>

@@ -1,6 +1,6 @@
 import { defineStore } from "pinia";
 import { repo } from "../db";
-import type { Task, TaskNode, TaskStatus } from "../types";
+import type { Tag, TagColor, Task, TaskNode, TaskStatus } from "../types";
 
 function todayKey(): string {
   const d = new Date();
@@ -22,13 +22,19 @@ async function broadcast() {
 
 interface State {
   tasks: Task[];
+  /** 标签定义（全局共用） */
+  tags: Tag[];
+  /** 侧栏选中的标签筛选：null = 不筛选 */
+  activeTag: string | null;
   loaded: boolean;
+  /** initSync 防重入标记 */
+  syncing: boolean;
   /** 新增/编辑弹窗状态：mode=add 时 date 为归属创建日；mode=edit 时 task 必有 */
   editor: { open: boolean; mode: "add" | "edit"; date: string; task: Task | null };
 }
 
 export const useTaskStore = defineStore("tasks", {
-  state: (): State => ({ tasks: [], loaded: false, editor: { open: false, mode: "add", date: todayKey(), task: null } }),
+  state: (): State => ({ tasks: [], tags: [], activeTag: null, loaded: false, syncing: false, editor: { open: false, mode: "add", date: todayKey(), task: null } }),
 
   getters: {
     /** 已完成任务按完成日期索引：key = completed_at */
@@ -51,6 +57,17 @@ export const useTaskStore = defineStore("tasks", {
     doneToday(state): Task[] {
       const k = todayKey();
       return state.tasks.filter((t) => t.status === "done" && t.completed_at === k);
+    },
+    /** 标签 id → 标签对象（视图渲染用，未知 id 忽略） */
+    tagsById(state): Record<string, Tag> {
+      const map: Record<string, Tag> = {};
+      for (const t of state.tags) map[t.id] = t;
+      return map;
+    },
+    /** 按侧栏标签筛选后的任务（activeTag 为 null 时即全部） */
+    filteredTasks(state): Task[] {
+      if (!state.activeTag) return state.tasks;
+      return state.tasks.filter((t) => t.tags.includes(state.activeTag!));
     },
     /** 树形结构（仅顶层+一层子任务，MVP 足够） */
     tree(state): TaskNode[] {
@@ -87,17 +104,20 @@ export const useTaskStore = defineStore("tasks", {
 
     async fetch() {
       this.tasks = await repo.list();
+      this.tags = await repo.listTags();
+      // 标签被删后残留的筛选 id 自动清空，避免筛出空列表还不知道原因
+      if (this.activeTag && !this.tags.some((t) => t.id === this.activeTag)) this.activeTag = null;
       this.loaded = true;
     },
 
-    async add(title: string, dateKey: string, parent: Task | null = null, priority: Task["priority"] = null, deadline: string | null = null) {
+    async add(title: string, dateKey: string, parent: Task | null = null, priority: Task["priority"] = null, deadline: string | null = null, tags: string[] = []) {
       if (!title.trim()) return;
       const t = await repo.insert({
         title: title.trim(),
         parent_id: parent ? parent.id : null,
         status: "todo",
         priority,
-        tag: null,
+        tags,
         deadline,
         created_at: dateKey,
         completed_at: null,
@@ -107,8 +127,8 @@ export const useTaskStore = defineStore("tasks", {
       await broadcast();
     },
 
-    /** 编辑任务：标题 / 预计结束日期 / 紧急级别 */
-    async updateTask(id: string, patch: { title?: string; deadline?: string | null; priority?: Task["priority"] }) {
+    /** 编辑任务：标题 / 预计结束日期 / 紧急级别 / 标签 */
+    async updateTask(id: string, patch: { title?: string; deadline?: string | null; priority?: Task["priority"]; tags?: string[] }) {
       await repo.update(id, patch);
       const t = this.tasks.find((x) => x.id === id);
       if (t) Object.assign(t, patch);
@@ -159,6 +179,45 @@ export const useTaskStore = defineStore("tasks", {
       const t = this.tasks.find((x) => x.id === id);
       if (t) t.deadline = deadline;
       await broadcast();
+    },
+
+    /* ---------- 标签管理 ---------- */
+    /** 新建标签：重名返回 null（调用方提示），成功返回新标签 */
+    async addTag(name: string, color: TagColor): Promise<Tag | null> {
+      const n = name.trim();
+      if (!n) return null;
+      if (this.tags.some((t) => t.name === n)) return null;
+      const tag: Tag = { id: "g" + Date.now().toString(36) + Math.random().toString(36).slice(2, 6), name: n, color };
+      await repo.insertTag(tag);
+      this.tags.push(tag);
+      await broadcast(); // 让便签窗口同步标签定义
+      return tag;
+    },
+
+    /** 删除标签定义，并从所有任务上摘除引用 */
+    async removeTag(id: string) {
+      await repo.deleteTag(id);
+      this.tags = this.tags.filter((t) => t.id !== id);
+      for (const t of this.tasks.filter((x) => x.tags.includes(id))) {
+        const tags = t.tags.filter((x) => x !== id);
+        await repo.update(t.id, { tags });
+        t.tags = tags;
+      }
+      if (this.activeTag === id) this.activeTag = null;
+      await broadcast();
+    },
+
+    /** 设置任务的标签（整体替换） */
+    async setTaskTags(id: string, tags: string[]) {
+      await repo.update(id, { tags });
+      const t = this.tasks.find((x) => x.id === id);
+      if (t) t.tags = tags;
+      await broadcast();
+    },
+
+    /** 侧栏标签筛选：再点取消 */
+    toggleTagFilter(id: string) {
+      this.activeTag = this.activeTag === id ? null : id;
     },
 
     async remove(id: string) {

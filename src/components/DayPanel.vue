@@ -7,12 +7,17 @@ import type { Task } from "../types";
 const props = defineProps<{ selected: string; today: string }>();
 const store = useTaskStore();
 
-const list = computed(() => store.tasks.filter((t) => t.created_at === props.selected));
+const list = computed(() => store.filteredTasks.filter((t) => t.created_at === props.selected));
 const doneN = computed(() => list.value.filter((t) => t.status === "done").length);
 const isToday = computed(() => props.selected === props.today);
 
 function priCls(p: Task["priority"]) {
   return p === "高" ? "hi" : p === "中" ? "mid" : p === "低" ? "low" : "none";
+}
+
+/** 任务的标签对象列表（过滤已删除的标签 id） */
+function taskTags(t: Task) {
+  return t.tags.map((id) => store.tagsById[id]).filter(Boolean);
 }
 
 /** 预计结束日期展示：临近（<=2天）高亮，逾期红色 */
@@ -46,6 +51,9 @@ function dueMeta(t: Task): { txt: string; cls: string } | null {
               @click.stop="store.setPriority(t.id, t.priority === null ? '低' : t.priority === '低' ? '中' : t.priority === '中' ? '高' : null)"
             ></button>
             <span>{{ t.title }}</span>
+          </div>
+          <div v-if="taskTags(t).length" class="t-tags">
+            <span v-for="tag in taskTags(t)" :key="tag.id" class="tag-chip" :class="'tg-' + tag.color"><i class="td"></i>{{ tag.name }}</span>
           </div>
           <div v-if="t.status === 'done' && t.completed_at" class="t-meta">
             <span class="ok">{{ t.created_at.slice(5) }} 创建 → {{ t.completed_at.slice(5) }} 完成</span>

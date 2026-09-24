@@ -12,18 +12,22 @@ const today = computed(() => {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
 });
 
-/** 往日滞留（未完成且创建日早于今天），按创建时间正序 */
+/** 往日滞留（未完成且创建日早于今天），按创建时间正序（跟随侧栏标签筛选） */
 const stay = computed(() =>
-  store.openTasks.filter((t) => t.created_at < today.value).sort((a, b) => (a.created_at < b.created_at ? -1 : 1)),
+  store.filteredTasks.filter((t) => (t.status === "todo" || t.status === "doing") && t.created_at < today.value).sort((a, b) => (a.created_at < b.created_at ? -1 : 1)),
 );
-const todayList = computed(() => store.tasks.filter((t) => t.created_at === today.value));
+const todayList = computed(() => store.filteredTasks.filter((t) => t.created_at === today.value));
 const pastDates = computed(() =>
-  [...new Set(store.tasks.filter((t) => t.created_at < today.value).map((t) => t.created_at))].sort().reverse(),
+  [...new Set(store.filteredTasks.filter((t) => t.created_at < today.value).map((t) => t.created_at))].sort().reverse(),
 );
+
+/** 任务的标签对象列表（过滤已删除的标签 id） */
+function taskTags(t: Task) {
+  return t.tags.map((id) => store.tagsById[id]).filter(Boolean);
+}
 
 function rowMeta(t: Task): { text: string; cls: string }[] {
   const meta: { text: string; cls: string }[] = [];
-  if (t.tag) meta.push({ text: t.tag, cls: "pill p-tag" });
   if (t.priority === "高") meta.push({ text: "紧急 · 高", cls: "pill p-hi" });
   if (t.priority === "中") meta.push({ text: "紧急 · 中", cls: "pill p-mid" });
   if (t.priority === "低") meta.push({ text: "紧急 · 低", cls: "pill p-low" });
@@ -47,6 +51,9 @@ function rowMeta(t: Task): { text: string; cls: string }[] {
       <div class="chk" :class="{ on: t.status === 'done' }" @click="store.toggle(t.id)">{{ t.status === 'done' ? '✓' : '' }}</div>
       <div class="t-main" @click="store.openEditor(t)">
         <div class="t-title">{{ t.title }}</div>
+        <div v-if="taskTags(t).length" class="t-tags">
+          <span v-for="tag in taskTags(t)" :key="tag.id" class="tag-chip" :class="'tg-' + tag.color"><i class="td"></i>{{ tag.name }}</span>
+        </div>
         <div class="t-meta"><span v-for="(m, i) in rowMeta(t)" :key="i" :class="m.cls">{{ m.text }}</span></div>
         <div v-if="t.children" class="kids"></div>
       </div>
@@ -79,6 +86,9 @@ function rowMeta(t: Task): { text: string; cls: string }[] {
       <div class="chk" :class="{ on: t.status === 'done' }" @click="store.toggle(t.id)">{{ t.status === 'done' ? '✓' : '' }}</div>
       <div class="t-main" @click="store.openEditor(t)">
         <div class="t-title">{{ t.title }}</div>
+        <div v-if="taskTags(t).length" class="t-tags">
+          <span v-for="tag in taskTags(t)" :key="tag.id" class="tag-chip" :class="'tg-' + tag.color"><i class="td"></i>{{ tag.name }}</span>
+        </div>
         <div class="t-meta"><span v-for="(m, i) in rowMeta(t)" :key="i" :class="m.cls">{{ m.text }}</span></div>
       </div>
       <button class="t-edit" title="编辑任务" @click.stop="store.openEditor(t)">✎</button>

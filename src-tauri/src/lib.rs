@@ -54,6 +54,20 @@ pub fn run() {
             );
         ",
         kind: MigrationKind::Up,
+    },
+    Migration {
+        version: 2,
+        description: "tags: tag_def 表 + task.tags JSON 列",
+        sql: "
+            CREATE TABLE IF NOT EXISTS tag_def (
+                id TEXT PRIMARY KEY,
+                name TEXT NOT NULL UNIQUE,
+                color TEXT NOT NULL DEFAULT 'blue',
+                sort INTEGER NOT NULL DEFAULT 0
+            );
+            ALTER TABLE task ADD COLUMN tags TEXT NOT NULL DEFAULT '[]';
+        ",
+        kind: MigrationKind::Up,
     }];
 
     tauri::Builder::default()

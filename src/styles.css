@@ -17,6 +17,8 @@
   --scrollbar:#d5dbe6;
   --win-btn-hover:rgba(0,0,0,.06); --win-btn-active:rgba(0,0,0,.1);
   --radius:10px;
+  /* 标签 7 色板（hex 与 types.ts TAG_HEX 同源） */
+  --tag-purple:#8b5cf6; --tag-teal:#14b8a6; --tag-pink:#ec4899;
 }
 /* ========== 设计令牌：深色（配套配色，非简单反色） ========== */
 :root[data-theme="dark"]{
@@ -285,3 +287,65 @@ body{background:var(--bg);color:var(--text);overflow:hidden;font-size:13px;trans
 
 ::-webkit-scrollbar{width:8px;height:8px;}
 ::-webkit-scrollbar-thumb{background:var(--scrollbar);border-radius:4px;}
+
+/* ===== 标签（tag feature） ===== */
+/* 标签胶囊：任务条 / 便签 / 清单通用，soft 底 + 实色字 + 色点 */
+.tag-chip{display:inline-flex;align-items:center;gap:5px;font-size:10.5px;font-weight:600;padding:1.5px 8px;border-radius:9px;line-height:1.5;white-space:nowrap;}
+.tag-chip .td{width:5px;height:5px;border-radius:50%;flex:none;}
+.tg-blue{background:var(--primary-soft);color:var(--primary);}        .tg-blue .td{background:var(--primary);}
+.tg-purple{background:rgba(139,92,246,.12);color:var(--tag-purple);}  .tg-purple .td{background:var(--tag-purple);}
+.tg-green{background:var(--green-soft);color:var(--green);}           .tg-green .td{background:var(--green);}
+.tg-orange{background:var(--yellow-soft);color:var(--yellow);}        .tg-orange .td{background:var(--yellow);}
+.tg-red{background:var(--red-soft);color:var(--red);}                 .tg-red .td{background:var(--red);}
+.tg-teal{background:rgba(20,184,166,.12);color:var(--tag-teal);}      .tg-teal .td{background:var(--tag-teal);}
+.tg-pink{background:rgba(236,72,153,.12);color:var(--tag-pink);}      .tg-pink .td{background:var(--tag-pink);}
+:root[data-theme="dark"] .tg-purple{background:rgba(139,92,246,.2);color:#b394f9;}
+:root[data-theme="dark"] .tg-teal{background:rgba(20,184,166,.18);color:#4fd8cc;}
+:root[data-theme="dark"] .tg-pink{background:rgba(236,72,153,.18);color:#f387bc;}
+/* 任务条上的标签行（当日面板 / 清单） */
+.t-tags{display:flex;flex-wrap:wrap;gap:5px;margin-top:5px;}
+
+/* 弹窗：标签多选 */
+.tag-sel{display:flex;flex-wrap:wrap;gap:6px;}
+.tag-opt{display:inline-flex;align-items:center;gap:5px;font-size:11.5px;font-weight:600;padding:4px 11px;border-radius:12px;border:1.5px solid transparent;cursor:pointer;transition:all .15s;user-select:none;background:transparent;color:var(--text2);}
+.tag-opt .td{width:6px;height:6px;border-radius:50%;}
+.tag-opt:hover{border-color:var(--primary);color:var(--primary);}
+.tag-opt.on.tg-blue{background:var(--primary-soft);color:var(--primary);border-color:transparent;}
+.tag-opt.on.tg-purple{background:rgba(139,92,246,.12);color:var(--tag-purple);}
+.tag-opt.on.tg-green{background:var(--green-soft);color:var(--green);}
+.tag-opt.on.tg-orange{background:var(--yellow-soft);color:var(--yellow);}
+.tag-opt.on.tg-red{background:var(--red-soft);color:var(--red);}
+.tag-opt.on.tg-teal{background:rgba(20,184,166,.12);color:var(--tag-teal);}
+.tag-opt.on.tg-pink{background:rgba(236,72,153,.12);color:var(--tag-pink);}
+:root[data-theme="dark"] .tag-opt.on.tg-purple{background:rgba(139,92,246,.2);color:#b394f9;}
+:root[data-theme="dark"] .tag-opt.on.tg-teal{background:rgba(20,184,166,.18);color:#4fd8cc;}
+:root[data-theme="dark"] .tag-opt.on.tg-pink{background:rgba(236,72,153,.18);color:#f387bc;}
+.tag-opt .to-del{display:none;margin-left:2px;font-size:10px;color:inherit;opacity:.6;}
+.tag-opt.on:hover .to-del{display:inline;}
+.tag-opt .to-del:hover{opacity:1;}
+/* 弹窗：新建标签行 */
+.tag-new{display:flex;align-items:center;gap:8px;margin-top:10px;padding-top:10px;border-top:1px dashed var(--border);}
+.tag-new-btn{display:inline-flex;align-items:center;gap:4px;border:1px dashed var(--border);background:transparent;color:var(--text2);font-size:11.5px;padding:4px 11px;border-radius:12px;cursor:pointer;transition:all .15s;}
+.tag-new-btn:hover{border-color:var(--primary);color:var(--primary);}
+.tag-new-form{display:flex;align-items:center;gap:8px;flex:1;min-width:0;}
+.tag-new-form input{flex:1;min-width:0;background:var(--input-bg);border:1.5px solid var(--primary);border-radius:8px;padding:5px 9px;font-size:12px;color:var(--text);outline:none;}
+.tag-new-form input.err{border-color:var(--red);}
+.color-dots{display:flex;gap:5px;flex:none;}
+.cdot{width:16px;height:16px;border-radius:50%;cursor:pointer;border:2px solid transparent;transition:transform .12s;padding:0;}
+.cdot.sel{border-color:var(--text);transform:scale(1.15);}
+.cdot:hover{transform:scale(1.15);}
+.tag-add-ok{border:none;background:var(--primary);color:var(--on-primary);font-size:11.5px;font-weight:600;padding:5px 12px;border-radius:8px;cursor:pointer;flex:none;}
+.tag-add-ok:hover{filter:brightness(1.08);}
+/* 侧栏标签分组 */
+.side-tag{display:flex;align-items:center;gap:9px;padding:7px 12px;border-radius:8px;cursor:pointer;color:var(--text2);font-size:12.5px;transition:.15s;user-select:none;}
+.side-tag:hover{background:var(--panel2);}
+.side-tag.on{background:var(--primary-soft);color:var(--primary);font-weight:600;}
+.side-tag .sd{width:9px;height:9px;border-radius:50%;flex:none;}
+.side-tag .cnt{margin-left:auto;font-size:11px;background:var(--seg-bg);border-radius:8px;padding:1px 7px;color:var(--text2);}
+.side-tag.on .cnt{background:var(--seg-on);}
+.side-tag-del{border:none;background:transparent;color:var(--text3);cursor:pointer;font-size:10px;padding:2px;border-radius:4px;opacity:0;transition:.15s;flex:none;}
+.side-tag:hover .side-tag-del{opacity:1;}
+.side-tag-del:hover{color:var(--red);}
+.side-tag-empty{font-size:11px;color:var(--text3);padding:4px 12px;line-height:1.6;}
+/* 日历格子/悬浮提示里的标签色点 */
+.tag-dot{display:inline-block;width:5px;height:5px;border-radius:50%;flex:none;}

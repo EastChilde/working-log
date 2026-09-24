@@ -2,7 +2,8 @@
 import { computed, nextTick, ref, watch } from "vue";
 import { useTaskStore } from "../stores/tasks";
 import { todayKey } from "../stores/tasks";
-import type { Task } from "../types";
+import type { TagColor, Task } from "../types";
+import { TAG_COLORS, TAG_HEX } from "../types";
 
 const store = useTaskStore();
 // editor 是被整体替换的对象，必须用 computed 保持响应性
@@ -11,6 +12,7 @@ const editor = computed(() => store.editor);
 const title = ref("");
 const deadline = ref<string | null>(null);
 const pri = ref<Task["priority"]>(null);
+const tags = ref<string[]>([]);
 const inputEl = ref<HTMLInputElement | null>(null);
 
 /* 打开时初始化表单 */
@@ -22,11 +24,14 @@ watch(
       title.value = editor.value.task.title;
       deadline.value = editor.value.task.deadline;
       pri.value = editor.value.task.priority;
+      tags.value = [...editor.value.task.tags];
     } else {
       title.value = "";
       deadline.value = null;
       pri.value = null;
+      tags.value = [];
     }
+    closeNewTag();
     await nextTick();
     inputEl.value?.focus();
   },
@@ -36,9 +41,9 @@ async function submit() {
   const v = title.value.trim();
   if (!v) return;
   if (editor.value.mode === "edit" && editor.value.task) {
-    await store.updateTask(editor.value.task.id, { title: v, deadline: deadline.value, priority: pri.value });
+    await store.updateTask(editor.value.task.id, { title: v, deadline: deadline.value, priority: pri.value, tags: tags.value });
   } else {
-    await store.add(v, editor.value.date, null, pri.value, deadline.value);
+    await store.add(v, editor.value.date, null, pri.value, deadline.value, tags.value);
   }
   store.closeEditor();
 }
@@ -46,6 +51,36 @@ async function submit() {
 /* 紧急级别胶囊：点已选中的取消 */
 function pickPri(v: Task["priority"]) {
   pri.value = pri.value === v ? null : v;
+}
+
+/* ---------- 标签选择 / 新建 ---------- */
+function toggleTag(id: string) {
+  tags.value = tags.value.includes(id) ? tags.value.filter((x) => x !== id) : [...tags.value, id];
+}
+const newTagOpen = ref(false);
+const newTagName = ref("");
+const newTagColor = ref<TagColor>("teal");
+const newTagErr = ref(false);
+const newTagInput = ref<HTMLInputElement | null>(null);
+function openNewTag() {
+  newTagOpen.value = true;
+  newTagName.value = "";
+  newTagErr.value = false;
+  newTagColor.value = TAG_COLORS[store.tags.length % TAG_COLORS.length]; // 色板顺序轮转，少翻页
+  nextTick(() => newTagInput.value?.focus());
+}
+function closeNewTag() {
+  newTagOpen.value = false;
+  newTagName.value = "";
+  newTagErr.value = false;
+}
+async function addTag() {
+  const name = newTagName.value.trim();
+  if (!name) { newTagInput.value?.focus(); return; }
+  const t = await store.addTag(name, newTagColor.value);
+  if (!t) { newTagErr.value = true; newTagInput.value?.focus(); return; } // 重名
+  tags.value = [...tags.value, t.id]; // 新建的标签自动选中
+  closeNewTag();
 }
 
 /* ---------- 预计结束日期：内嵌月历 ---------- */
@@ -99,10 +134,11 @@ function onMaskClick(e: MouseEvent) {
   pickerOpen.value = false;
 }
 
-/* Esc：月历开 → 先关月历；否则关弹窗 */
+/* Esc：新建标签表单开 → 先收起；否则月历开 → 先关月历；否则关弹窗 */
 function onKey(e: KeyboardEvent) {
   if (e.key !== "Escape" || !editor.value.open) return;
-  if (pickerOpen.value) pickerOpen.value = false;
+  if (newTagOpen.value) closeNewTag();
+  else if (pickerOpen.value) pickerOpen.value = false;
   else store.closeEditor();
 }
 window.addEventListener("keydown", onKey);
@@ -170,6 +206,51 @@ window.addEventListener("keydown", onKey);
               <button type="button" class="pri-pill hi" :class="{ on: pri === '高' }" @click="pickPri('高')"><span class="pd"></span>高 · 紧急</button>
               <button type="button" class="pri-pill mid" :class="{ on: pri === '中' }" @click="pickPri('中')"><span class="pd"></span>中 · 一般</button>
               <button type="button" class="pri-pill low" :class="{ on: pri === '低' }" @click="pickPri('低')"><span class="pd"></span>低 · 不急</button>
+            </div>
+          </div>
+          <div>
+            <label class="f-label">标签（可多选）</label>
+            <div class="tag-sel">
+              <button
+                v-for="t in store.tags"
+                :key="t.id"
+                type="button"
+                class="tag-opt"
+                :class="[tags.includes(t.id) ? 'on tg-' + t.color : 'off']"
+                @click="toggleTag(t.id)"
+              >
+                <i class="td" :style="{ background: TAG_HEX[t.color] }"></i>{{ t.name }}
+              </button>
+              <button v-if="!newTagOpen" type="button" class="tag-new-btn" @click="openNewTag">＋ 新建标签</button>
+            </div>
+            <div v-if="newTagOpen" class="tag-new" style="border-top:none;padding-top:2px;margin-top:8px;">
+              <div class="tag-new-form">
+                <input
+                  ref="newTagInput"
+                  v-model="newTagName"
+                  type="text"
+                  placeholder="标签名称，如：项目A"
+                  maxlength="8"
+                  :class="{ err: newTagErr }"
+                  @keydown.enter.prevent="addTag"
+                />
+                <div class="color-dots">
+                  <button
+                    v-for="c in TAG_COLORS"
+                    :key="c"
+                    type="button"
+                    class="cdot"
+                    :class="{ sel: newTagColor === c }"
+                    :style="{ background: TAG_HEX[c] }"
+                    :title="c"
+                    @click="newTagColor = c"
+                  ></button>
+                </div>
+                <button type="button" class="tag-add-ok" @click="addTag">添加</button>
+              </div>
+            </div>
+            <div class="tm-hint" style="text-align:left;padding:6px 0 0;">
+              {{ newTagErr ? '已有同名标签，换一个名字' : '标签全局共用，新建一次所有任务都能用 · Enter 快速添加' }}
             </div>
           </div>
         </div>
