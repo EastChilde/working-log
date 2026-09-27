@@ -172,6 +172,7 @@ body{background:var(--bg);color:var(--text);overflow:hidden;font-size:13px;trans
 .dp-head{padding:16px 16px 10px;border-bottom:1px solid var(--border);}
 .dp-head h3{font-size:15px;}
 .dp-head .sub{font-size:11px;color:var(--text2);margin-top:3px;}
+.dp-scope{font-size:10.5px;color:var(--primary);background:var(--primary-soft);border-radius:6px;padding:3px 8px;margin-top:6px;display:inline-block;}
 .dp-body{flex:1;overflow-y:auto;padding:12px;}
 .dp-body .task{padding:10px 12px;}
 /* 圆点与文字留出间距：flex 悬挂布局，换行文字与首行对齐、不顶到圆点下 */

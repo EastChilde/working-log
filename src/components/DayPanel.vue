@@ -35,6 +35,9 @@ function dueMeta(t: Task): { txt: string; cls: string } | null {
     <div class="dp-head">
       <h3>{{ fmtCn(selected) }}{{ isToday ? " · 今天" : "" }}</h3>
       <div class="sub">{{ doneN }}/{{ list.length }} 完成</div>
+      <div v-if="store.scope !== 'all'" class="dp-scope">
+        已按「{{ store.scope === 'today' ? '今日待办' : '滞留任务' }}」筛选 · 点侧栏「全部任务」恢复
+      </div>
     </div>
     <button class="dp-addbtn" @click="store.openEditor(selected)">
       <span class="plus">＋</span>新增任务

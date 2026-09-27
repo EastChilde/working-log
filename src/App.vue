@@ -50,6 +50,28 @@ async function delTag(tag: { id: string; name: string }) {
   await store.removeTag(tag.id);
 }
 
+/* ---------- 侧栏范围筛选：单选模型，点任何一个其他选中自动清除 ---------- */
+function scopeAll() {
+  store.scope = "all";
+  store.activeTag = null;
+  view.value = "list";
+}
+function scopeToday() {
+  store.scope = "today";
+  store.activeTag = null;
+  view.value = "list";
+}
+function scopeStay() {
+  store.scope = "stay";
+  store.activeTag = null;
+  view.value = "list";
+}
+/** 点标签：选中即切回清单视图；再点同一标签取消（回到「全部任务」选中态） */
+function pickTag(id: string) {
+  store.toggleTagFilter(id);
+  view.value = "list";
+}
+
 /** 主题：light / dark，存 localStorage，启动即应用（防闪烁在 main.ts 同步处理） */
 const theme = ref<"light" | "dark">((localStorage.getItem("workinglog-theme") as "light" | "dark") || "light");
 async function applyTheme(t: "light" | "dark") {
@@ -147,17 +169,17 @@ async function winClose() {
 
   <div class="layout">
     <div class="sidebar">
-      <div class="side-item" :class="{ on: !store.activeTag }" @click="store.activeTag = null">🗂 全部任务</div>
-      <div class="side-item">☀️ 今日待办 <span class="cnt">{{ sideToday }}</span></div>
-      <div class="side-item">⏳ 滞留任务 <span class="cnt">{{ sideStay }}</span></div>
+      <div class="side-item" :class="{ on: view !== 'hist' && store.scope === 'all' && !store.activeTag }" @click="scopeAll">🗂 全部任务</div>
+      <div class="side-item" :class="{ on: view !== 'hist' && store.scope === 'today' && !store.activeTag }" title="只看今天创建且未完成的任务" @click="scopeToday">☀️ 今日待办 <span class="cnt">{{ sideToday }}</span></div>
+      <div class="side-item" :class="{ on: view !== 'hist' && store.scope === 'stay' && !store.activeTag }" title="只看往日创建至今未完成的任务" @click="scopeStay">⏳ 滞留任务 <span class="cnt">{{ sideStay }}</span></div>
       <div class="side-sec"><span>标签</span></div>
       <div
         v-for="tag in store.tags"
         :key="tag.id"
         class="side-tag"
-        :class="{ on: store.activeTag === tag.id }"
+        :class="{ on: view !== 'hist' && store.activeTag === tag.id }"
         :title="store.activeTag === tag.id ? '再次点击取消筛选' : '点击只看「' + tag.name + '」的任务'"
-        @click="store.toggleTagFilter(tag.id)"
+        @click="pickTag(tag.id)"
       >
         <i class="sd" :style="{ background: TAG_HEX[tag.color] }"></i>{{ tag.name }}
         <span class="cnt">{{ openCountByTag(tag.id) }}</span>
@@ -165,8 +187,7 @@ async function winClose() {
       </div>
       <div v-if="!store.tags.length" class="side-tag-empty">暂无标签<br />编辑任务时点「＋ 新建标签」创建</div>
       <div class="side-sec">回顾</div>
-      <div class="side-item" :class="{ on: view === 'hist' }" @click="view = 'hist'">📈 年度统计</div>
-      <div class="side-item" :class="{ on: view === 'hist' }" @click="view = 'hist'">📤 年终总结导出</div>
+      <div class="side-item" :class="{ on: view === 'hist' }" @click="view = 'hist'">📈 年度统计与总结</div>
       <div class="legend">
         <span><i style="background: var(--green)"></i>全部完成</span>
         <span><i style="background: var(--yellow)"></i>部分完成</span>

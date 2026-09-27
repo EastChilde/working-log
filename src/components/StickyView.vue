@@ -50,35 +50,66 @@ function persistDock(off: number) {
   try { localStorage.setItem(DOCK_KEY, JSON.stringify({ edge: dockEdge.value, off })); } catch { /* ignore */ }
 }
 
-const tabSize = () => (dockEdge.value === "left" || dockEdge.value === "right" ? { w: SIDE_W, h: SIDE_H } : { w: EDGE_W, h: EDGE_H });
+/* ===== 丝滑停靠：只动位置、不动尺寸 =====
+ * 窗口尺寸恒定（展开尺寸），收起 = 整窗滑出屏幕、只留拉手侧的 18px 在屏内；
+ * 这样避开了 setSize+setPosition 两次 OS 操作的「跳变」，位置插值天然顺滑 */
+const tabVisible = ref(false); // 拉手覆盖层：停靠中/停靠后显示，展开完成后隐藏
+let transSeq = 0;              // 过渡序号：新过渡发起后旧过渡自动让位
 
+/** 位置缓动滑行：easeOutCubic，约 180ms，每帧一次 setPosition（无重排） */
+function slideTo(tx: number, ty: number, seq: number = ++transSeq, dur = 180) {
+  return new Promise<void>((resolve) => {
+    if (!win) return resolve();
+    win.outerPosition()
+      .then((p0) => {
+        if (seq !== transSeq) return resolve();
+        const dx = tx - p0.x, dy = ty - p0.y;
+        if (Math.abs(dx) < 2 && Math.abs(dy) < 2) return resolve();
+        const t0 = performance.now();
+        const iv = window.setInterval(() => {
+          if (seq !== transSeq) { window.clearInterval(iv); return resolve(); }
+          const t = Math.min(1, (performance.now() - t0) / dur);
+          const e = 1 - Math.pow(1 - t, 3);
+          void win!.setPosition(new PhysicalPosition(Math.round(p0.x + dx * e), Math.round(p0.y + dy * e)));
+          if (t >= 1) { window.clearInterval(iv); resolve(); }
+        }, 16);
+      })
+      .catch(() => resolve());
+  });
+}
+
+/** 停靠到指定边：尺寸不变，滑出屏幕只留拉手一侧 18px 在屏内 */
+async function dockTo(edge: DockEdge) {
+  if (!win) return;
+  const seq = ++transSeq;
+  const mon = await currentMonitor();
+  if (!mon) return;
+  const [pos, size] = [await win.outerPosition(), await win.innerSize()];
+  const m = mon.size, w = size.width, h = size.height;
+  let x: number, y: number, off: number;
+  if (edge === "right") { x = m.width - SIDE_W; y = clamp(pos.y, 0, m.height - SIDE_H); off = y; }
+  else if (edge === "left") { x = -(w - SIDE_W); y = clamp(pos.y, 0, m.height - SIDE_H); off = y; }
+  else if (edge === "top") { y = -(h - EDGE_H); x = clamp(pos.x, 0, m.width - EDGE_W); off = x; }
+  else { y = m.height - EDGE_H; x = clamp(pos.x, 0, m.width - EDGE_W); off = x; }
+  dockEdge.value = edge;
+  autoPeek.value = false;
+  tabVisible.value = true; // 拉手骑在面板前缘一起滑向边缘
+  await slideTo(x, y, seq);
+  if (seq !== transSeq) return;
+  minimized.value = true;
+  persistDock(off);
+  lastDockTs = Date.now();
+}
+
+/** 收起：记录展开几何后停靠 */
 async function minimizeToEdge() {
   if (!win) return;
   try {
-    const [mon, pos, size] = [await currentMonitor(), await win.outerPosition(), await win.innerSize()];
-    const cand = { x: pos.x, y: pos.y, w: size.width, h: size.height };
+    const [p, s] = [await win.outerPosition(), await win.innerSize()];
+    const cand = { x: p.x, y: p.y, w: s.width, h: s.height };
     if (validGeom(cand)) { savedGeom = cand; persistPos(cand); }
-    if (mon) {
-      let saved: { edge: DockEdge; off: number } | null = null;
-      try { saved = JSON.parse(localStorage.getItem(DOCK_KEY) || "null"); } catch { /* ignore */ }
-      const edge = saved?.edge || "right";
-      dockEdge.value = edge;
-      const ts = tabSize();
-      const m = mon.size;
-      let x: number, y: number;
-      if (edge === "left") { x = 0; y = clamp(saved?.off ?? pos.y, 0, m.height - ts.h); }
-      else if (edge === "right") { x = m.width - ts.w; y = clamp(saved?.off ?? pos.y, 0, m.height - ts.h); }
-      else if (edge === "top") { y = 0; x = clamp(saved?.off ?? pos.x, 0, m.width - ts.w); }
-      else { y = m.height - ts.h; x = clamp(saved?.off ?? pos.x, 0, m.width - ts.w); }
-      await win.setSize(new PhysicalSize(ts.w, ts.h));
-      await win.setPosition(new PhysicalPosition(x, y));
-    }
-    minimized.value = true;
-    autoPeek.value = false;
-    lastDockTs = Date.now();
-  } catch (e) {
-    console.error("minimize failed", e);
-  }
+  } catch { /* ignore */ }
+  try { await dockTo(dockEdge.value); } catch (e) { console.error("minimize failed", e); }
 }
 
 function clamp(v: number | undefined, lo: number, hi: number): number {
@@ -88,13 +119,25 @@ function clamp(v: number | undefined, lo: number, hi: number): number {
 
 async function restoreFromEdge() {
   if (!win) return;
-  const g0 = savedGeom || readStoredPos();
-  const g = validGeom(g0) ? g0 : null; // 脏几何不恢复，窗口保持默认尺寸
+  const seq = ++transSeq;
+  const g = validGeom(savedGeom) ? savedGeom : readStoredPos();
+  minimized.value = false; // 立即切回面板 DOM，整窗从屏幕边缘外滑入
   if (g) {
-    await win.setPosition(new PhysicalPosition(g.x, g.y));
-    await win.setSize(new PhysicalSize(g.w, g.h));
+    await slideTo(g.x, g.y, seq);
+    if (seq === transSeq) tabVisible.value = false;
+    return;
   }
-  minimized.value = false;
+  // 无有效展开几何：滑到停靠边内侧就近位置
+  try {
+    const mon = await currentMonitor();
+    if (!mon) return;
+    const [pos, size] = [await win.outerPosition(), await win.innerSize()];
+    const m = mon.size;
+    const x = dockEdge.value === "left" ? 24 : dockEdge.value === "right" ? m.width - size.width - 24 : pos.x;
+    const y = dockEdge.value === "top" ? 24 : dockEdge.value === "bottom" ? m.height - size.height - 24 : pos.y;
+    await slideTo(clamp(x, 0, Math.max(0, m.width - size.width)), clamp(y, 0, Math.max(0, m.height - size.height)), seq);
+    if (seq === transSeq) tabVisible.value = false;
+  } catch { /* ignore */ }
 }
 
 /** hover 拉手 → 自动滑出（不抢焦点）；收起后短暂冷却防止边缘抖动 */
@@ -122,28 +165,41 @@ function cancelPeekHide() {
   if (peekTimer !== null) { window.clearTimeout(peekTimer); peekTimer = null; }
 }
 
-/** 通用窗口拖拽：mousedown 起步、mousemove 跟随、mouseup 回调落点（moved 才回调） */
+/** 原生窗口拖拽：OS 级移动（与系统拖标题栏同机制，满帧丝滑），松手后回调
+ * 结束检测双保险：Windows 上 startDragging 的 Promise 在松手后才 resolve；
+ * 位置轮询连续稳定 3 次兜底（防平台差异 Promise 提前返回） */
+let nativeDragSeq = 0;
 function startWindowDrag(e: MouseEvent, onDrop: (moved: boolean) => void) {
   if (!win || e.button !== 0) return;
   e.preventDefault();
-  const scale = window.devicePixelRatio || 1;
-  win.outerPosition().then((p0) => {
-    const sx = e.clientX, sy = e.clientY, wx = p0.x, wy = p0.y;
-    let moved = false;
-    const move = (ev: MouseEvent) => {
-      const dx = ev.clientX - sx, dy = ev.clientY - sy;
-      if (!moved && Math.abs(dx) < 4 && Math.abs(dy) < 4) return;
-      moved = true;
-      void win!.setPosition(new PhysicalPosition(Math.round(wx + dx * scale), Math.round(wy + dy * scale)));
-    };
-    const up = () => {
-      window.removeEventListener("mousemove", move);
-      window.removeEventListener("mouseup", up);
-      onDrop(moved);
-    };
-    window.addEventListener("mousemove", move);
-    window.addEventListener("mouseup", up);
-  }).catch(() => { /* ignore */ });
+  const seq = ++nativeDragSeq;
+  let done = false;
+  let changed = false;
+  let lastX = NaN, lastY = NaN;
+  let stable = 0;
+  let iv: number | null = null;
+  const finish = () => {
+    if (done) return;
+    done = true;
+    if (iv !== null) window.clearInterval(iv);
+    onDrop(changed);
+  };
+  win.outerPosition()
+    .then((p0) => {
+      if (seq !== nativeDragSeq) return;
+      lastX = p0.x;
+      lastY = p0.y;
+      iv = window.setInterval(async () => {
+        if (done) return;
+        try {
+          const p = await win!.outerPosition();
+          if (p.x !== lastX || p.y !== lastY) { changed = true; lastX = p.x; lastY = p.y; stable = 0; }
+          else if (changed && ++stable >= 3) finish();
+        } catch { /* ignore */ }
+      }, 33);
+      win!.startDragging().then(finish, finish);
+    })
+    .catch(() => { /* ignore */ });
 }
 
 /** 展开态标题栏拖拽：松手距屏幕边 < SNAP_PX 自动吸附收起，否则记忆位置 */
@@ -188,7 +244,7 @@ function onTabDown(e: MouseEvent) {
 async function snapToEdge() {
   if (!win) return;
   // 从展开态收起：先记录展开几何，供下次 hover/点击展开时恢复
-  // （tab 拖拽换边时已 minimized，此时窗口是 tab 尺寸，不能记录）
+  // （拉手拖拽换边时已 minimized，窗口是展开尺寸，不受影响）
   if (!minimized.value) {
     try {
       const [p, s] = [await win.outerPosition(), await win.innerSize()];
@@ -197,30 +253,17 @@ async function snapToEdge() {
     } catch { /* ignore */ }
   }
   const mon = await currentMonitor();
-  const pos = await win.outerPosition();
   if (!mon) return;
+  const [pos, size] = [await win.outerPosition(), await win.innerSize()];
   const m = mon.size;
-  const ts = tabSize();
   const d = {
     left: pos.x,
-    right: m.width - pos.x - ts.w,
+    right: m.width - pos.x - size.width,
     top: pos.y,
-    bottom: m.height - pos.y - ts.h,
+    bottom: m.height - pos.y - size.height,
   };
   const edge = (Object.keys(d) as DockEdge[]).reduce((a, b) => (d[a] <= d[b] ? a : b));
-  dockEdge.value = edge;
-  const size = edge === "left" || edge === "right" ? { w: SIDE_W, h: SIDE_H } : { w: EDGE_W, h: EDGE_H };
-  let x: number, y: number, off: number;
-  if (edge === "left") { x = 0; y = clamp(pos.y, 0, m.height - size.h); off = y; }
-  else if (edge === "right") { x = m.width - size.w; y = clamp(pos.y, 0, m.height - size.h); off = y; }
-  else if (edge === "top") { y = 0; x = clamp(pos.x, 0, m.width - size.w); off = x; }
-  else { y = m.height - size.h; x = clamp(pos.x, 0, m.width - size.w); off = x; }
-  await win.setSize(new PhysicalSize(size.w, size.h));
-  await win.setPosition(new PhysicalPosition(x, y));
-  persistDock(off);
-  minimized.value = true;
-  autoPeek.value = false;
-  lastDockTs = Date.now();
+  await dockTo(edge);
 }
 
 /* ===== 紧急程度排序视图 ===== */
@@ -298,9 +341,9 @@ onMounted(() => {
 </script>
 
 <template>
-  <!-- 贴边拉手：鼠标移过自动滑出；按住可拖拽换边 -->
+  <!-- 贴边拉手：停靠时骑在窗口可见侧边缘；鼠标移过自动滑出；按住可拖拽换边 -->
   <div
-    v-if="minimized"
+    v-if="tabVisible"
     class="mini-tab"
     :class="'edge-' + dockEdge"
     title="移过来自动展开 · 按住拖拽换边"
@@ -405,11 +448,9 @@ body {
 .s-sum b.low { background: rgba(52, 185, 111, 0.14); color: #238a50; }
 .s-sum b.low i { background: #34b96f; }
 
-/* 贴边拉手：小巧、随吸附方向变形，可拖拽 */
+/* 贴边拉手：小巧、随吸附方向贴在窗口可见侧边缘，可拖拽 */
 .mini-tab {
   position: fixed;
-  left: 0;
-  top: 0;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -440,6 +481,11 @@ body {
   height: 18px;
   letter-spacing: 3px;
 }
+/* 拉手贴在窗口可见侧：右停靠=窗口左缘可见，左停靠=窗口右缘可见，上下同理 */
+.mini-tab.edge-right { left: 0; top: 50%; transform: translateY(-50%); }
+.mini-tab.edge-left { right: 0; top: 50%; transform: translateY(-50%); }
+.mini-tab.edge-top { bottom: 0; left: 50%; transform: translateX(-50%); }
+.mini-tab.edge-bottom { top: 0; left: 50%; transform: translateX(-50%); }
 .mini-tab.edge-left { border-left: none; border-radius: 0 6px 6px 0; box-shadow: 2px 2px 8px rgba(0, 0, 0, 0.18); }
 .mini-tab.edge-right { border-right: none; border-radius: 6px 0 0 6px; box-shadow: -2px 2px 8px rgba(0, 0, 0, 0.18); }
 .mini-tab.edge-top { border-top: none; border-radius: 0 0 6px 6px; box-shadow: 0 2px 8px rgba(0, 0, 0, 0.18); }

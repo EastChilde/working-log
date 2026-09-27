@@ -26,6 +26,8 @@ interface State {
   tags: Tag[];
   /** 侧栏选中的标签筛选：null = 不筛选 */
   activeTag: string | null;
+  /** 侧栏任务范围：全部 / 今日待办 / 滞留任务 */
+  scope: "all" | "today" | "stay";
   loaded: boolean;
   /** initSync 防重入标记 */
   syncing: boolean;
@@ -34,7 +36,7 @@ interface State {
 }
 
 export const useTaskStore = defineStore("tasks", {
-  state: (): State => ({ tasks: [], tags: [], activeTag: null, loaded: false, syncing: false, editor: { open: false, mode: "add", date: todayKey(), task: null } }),
+  state: (): State => ({ tasks: [], tags: [], activeTag: null, scope: "all", loaded: false, syncing: false, editor: { open: false, mode: "add", date: todayKey(), task: null } }),
 
   getters: {
     /** 已完成任务按完成日期索引：key = completed_at */
@@ -64,10 +66,14 @@ export const useTaskStore = defineStore("tasks", {
       for (const t of state.tags) map[t.id] = t;
       return map;
     },
-    /** 按侧栏标签筛选后的任务（activeTag 为 null 时即全部） */
+    /** 按侧栏范围（全部/今日待办/滞留）+ 标签筛选后的任务 */
     filteredTasks(state): Task[] {
-      if (!state.activeTag) return state.tasks;
-      return state.tasks.filter((t) => t.tags.includes(state.activeTag!));
+      const tk = todayKey();
+      let list = state.tasks;
+      if (state.scope === "today") list = list.filter((t) => t.created_at === tk && t.status !== "done");
+      else if (state.scope === "stay") list = list.filter((t) => t.created_at < tk && (t.status === "todo" || t.status === "doing"));
+      if (state.activeTag) list = list.filter((t) => t.tags.includes(state.activeTag!));
+      return list;
     },
     /** 树形结构（仅顶层+一层子任务，MVP 足够） */
     tree(state): TaskNode[] {
@@ -215,9 +221,10 @@ export const useTaskStore = defineStore("tasks", {
       await broadcast();
     },
 
-    /** 侧栏标签筛选：再点取消 */
+    /** 侧栏标签筛选：单选模型——选中标签时清掉今日/滞留范围；再点取消 */
     toggleTagFilter(id: string) {
       this.activeTag = this.activeTag === id ? null : id;
+      if (this.activeTag) this.scope = "all";
     },
 
     async remove(id: string) {
