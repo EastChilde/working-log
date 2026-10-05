@@ -1,9 +1,10 @@
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, ref } from "vue";
+import { computed, nextTick, onMounted, onUnmounted, ref } from "vue";
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import { useTaskStore, todayKey } from "./stores/tasks";
+import { useTaskStore, todayKey, inSubtree } from "./stores/tasks";
 import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
-import { TAG_HEX } from "./types";
+import { TAG_HEX, TAG_COLORS } from "./types";
+import type { Tag, TagColor } from "./types";
 import CalendarView from "./components/CalendarView.vue";
 import ListView from "./components/ListView.vue";
 import DayPanel from "./components/DayPanel.vue";
@@ -40,14 +41,66 @@ const sideToday = computed(() => store.tasks.filter((t) => t.created_at === toda
 const sideStay = computed(() => store.openTasks.filter((t) => t.created_at < today).length);
 const inboxCount = computed(() => 0);
 
-/** 标签下未完成任务数（侧栏角标） */
-function openCountByTag(id: string) {
-  return store.openTasks.filter((t) => t.tags.includes(id)).length;
+/** 标签下任务总数（侧栏角标）——含已完成；父标签聚合整棵子树 */
+function tagCount(id: string) {
+  return store.tasks.filter((t) => t.tags.some((tid) => inSubtree(store.tags, tid, id))).length;
 }
-/** 删除标签：任务上的引用一并移除（数据库层已兜底） */
+/** 标签下未完成任务数（悬浮提示用） */
+function tagOpenCount(id: string) {
+  return store.openTasks.filter((t) => t.tags.some((tid) => inSubtree(store.tags, tid, id))).length;
+}
+
+/* ---------- 二级标签：树形渲染 ---------- */
+const expandedTags = ref<Record<string, boolean>>({});
+const tagTree = computed(() =>
+  store.tags
+    .filter((t) => !t.parent_id)
+    .map((r) => ({ tag: r, children: store.tags.filter((c) => c.parent_id === r.id) })),
+);
+function toggleExpand(id: string) {
+  expandedTags.value[id] = expandedTags.value[id] === false ? true : false;
+}
+/** 删除标签：有子标签时子标签升级为顶级，任务上的引用一并移除 */
 async function delTag(tag: { id: string; name: string }) {
-  if (!window.confirm(`删除标签「${tag.name}」？任务不会删除，仅摘除该标签。`)) return;
+  const childN = store.tags.filter((t) => t.parent_id === tag.id).length;
+  const msg = childN
+    ? `删除标签「${tag.name}」？其下 ${childN} 个子标签将升级为顶级标签，任务不会删除，仅摘除该标签。`
+    : `删除标签「${tag.name}」？任务不会删除，仅摘除该标签。`;
+  if (!window.confirm(msg)) return;
   await store.removeTag(tag.id);
+}
+
+/* ---------- 标签编辑：改名 / 换色 / 改归属（可把现有标签调成子标签） ---------- */
+const editingId = ref<string | null>(null);
+const editName = ref("");
+const editColor = ref<TagColor>("blue");
+const editPid = ref<string | null>(null);
+const editErr = ref(false);
+const editInput = ref<HTMLInputElement | null>(null);
+const editingTag = computed(() => store.tags.find((t) => t.id === editingId.value) || null);
+/** 已有子标签的标签不能再当子标签（会超两级），归属下拉锁定 */
+const editPidLocked = computed(() => !!editingTag.value && store.tags.some((t) => t.parent_id === editingTag.value!.id));
+/** 可选归属：除自己外的全部顶级标签 */
+const editPidOptions = computed(() => store.tags.filter((t) => !t.parent_id && t.id !== editingId.value));
+function startEdit(tag: Tag) {
+  editingId.value = tag.id;
+  editName.value = tag.name;
+  editColor.value = tag.color;
+  editPid.value = tag.parent_id ?? null;
+  editErr.value = false;
+  nextTick(() => editInput.value?.focus());
+}
+function cancelEdit() {
+  editingId.value = null;
+}
+async function saveEdit() {
+  if (!editingId.value) return;
+  const ok = await store.editTag(editingId.value, { name: editName.value, color: editColor.value, parent_id: editPid.value });
+  if (!ok) {
+    editErr.value = true;
+    return;
+  }
+  editingId.value = null;
 }
 
 /* ---------- 侧栏范围筛选：单选模型，点任何一个其他选中自动清除 ---------- */
@@ -173,19 +226,76 @@ async function winClose() {
       <div class="side-item" :class="{ on: view !== 'hist' && store.scope === 'today' && !store.activeTag }" title="只看今天创建且未完成的任务" @click="scopeToday">☀️ 今日待办 <span class="cnt">{{ sideToday }}</span></div>
       <div class="side-item" :class="{ on: view !== 'hist' && store.scope === 'stay' && !store.activeTag }" title="只看往日创建至今未完成的任务" @click="scopeStay">⏳ 滞留任务 <span class="cnt">{{ sideStay }}</span></div>
       <div class="side-sec"><span>标签</span></div>
-      <div
-        v-for="tag in store.tags"
-        :key="tag.id"
-        class="side-tag"
-        :class="{ on: view !== 'hist' && store.activeTag === tag.id }"
-        :title="store.activeTag === tag.id ? '再次点击取消筛选' : '点击只看「' + tag.name + '」的任务'"
-        @click="pickTag(tag.id)"
-      >
-        <i class="sd" :style="{ background: TAG_HEX[tag.color] }"></i>{{ tag.name }}
-        <span class="cnt">{{ openCountByTag(tag.id) }}</span>
-        <button class="side-tag-del" title="删除标签（任务保留，仅摘除标签）" @click.stop="delTag(tag)">✕</button>
-      </div>
+      <template v-for="node in tagTree" :key="node.tag.id">
+        <div
+          class="side-tag"
+          :class="{ on: view !== 'hist' && store.activeTag === node.tag.id, 'side-tag-p': node.children.length }"
+          :title="store.activeTag === node.tag.id ? '再次点击取消筛选' : '点击只看「' + node.tag.name + '」及其子标签的任务'"
+          @click="pickTag(node.tag.id)"
+        >
+          <span
+            v-if="node.children.length"
+            class="tw"
+            :title="expandedTags[node.tag.id] === false ? '展开' : '收起'"
+            @click.stop="toggleExpand(node.tag.id)"
+          >{{ expandedTags[node.tag.id] === false ? '▸' : '▾' }}</span>
+          <i class="sd" :style="{ background: TAG_HEX[node.tag.color] }"></i><span class="tname">{{ node.tag.name }}</span>
+          <span class="cnt" :title="'共 ' + tagCount(node.tag.id) + ' 个任务，未完成 ' + tagOpenCount(node.tag.id) + ' 个'">{{ tagCount(node.tag.id) }}</span>
+          <button class="side-tag-edit" title="编辑标签（改名 / 换色 / 调整归属）" @click.stop="startEdit(node.tag)">✎</button>
+          <button class="side-tag-del" title="删除标签（子标签升级为顶级，任务保留仅摘除）" @click.stop="delTag(node.tag)">✕</button>
+        </div>
+        <template v-if="node.children.length && expandedTags[node.tag.id] !== false">
+          <div
+            v-for="c in node.children"
+            :key="c.id"
+            class="side-tag side-tag-sub"
+            :class="{ on: view !== 'hist' && store.activeTag === c.id }"
+            :title="store.activeTag === c.id ? '再次点击取消筛选' : '点击只看「' + c.name + '」的任务'"
+            @click="pickTag(c.id)"
+          >
+            <i class="sd" :style="{ background: TAG_HEX[c.color] }"></i><span class="tname">{{ c.name }}</span>
+            <span class="cnt" :title="'共 ' + tagCount(c.id) + ' 个任务，未完成 ' + tagOpenCount(c.id) + ' 个'">{{ tagCount(c.id) }}</span>
+            <button class="side-tag-edit" title="编辑标签（改名 / 换色 / 调整归属）" @click.stop="startEdit(c)">✎</button>
+            <button class="side-tag-del" title="删除标签（任务保留，仅摘除标签）" @click.stop="delTag(c)">✕</button>
+          </div>
+        </template>
+      </template>
       <div v-if="!store.tags.length" class="side-tag-empty">暂无标签<br />编辑任务时点「＋ 新建标签」创建</div>
+      <!-- 标签编辑面板（就地展开在标签列表下方） -->
+      <div v-if="editingTag" class="side-tag-editpanel" @click.stop>
+        <div class="ste-title">编辑「{{ editingTag.name }}」</div>
+        <input
+          ref="editInput"
+          v-model="editName"
+          type="text"
+          placeholder="标签名称"
+          maxlength="8"
+          :class="{ err: editErr }"
+          @keydown.enter.prevent="saveEdit"
+          @keydown.esc.prevent="cancelEdit"
+        />
+        <div class="color-dots">
+          <button
+            v-for="c2 in TAG_COLORS"
+            :key="c2"
+            type="button"
+            class="cdot"
+            :class="{ sel: editColor === c2 }"
+            :style="{ background: TAG_HEX[c2] }"
+            :title="c2"
+            @click="editColor = c2"
+          ></button>
+        </div>
+        <select v-model="editPid" class="ste-pid" :disabled="editPidLocked" :title="editPidLocked ? '该标签下已有子标签，不能再归属到其他标签下' : ''">
+          <option :value="null">顶级标签</option>
+          <option v-for="p in editPidOptions" :key="p.id" :value="p.id">归属：{{ p.name }}</option>
+        </select>
+        <div class="ste-btns">
+          <button class="ste-save" @click="saveEdit">保存</button>
+          <button class="ste-cancel" @click="cancelEdit">取消</button>
+        </div>
+        <div v-if="editErr" class="ste-err">名称重复或归属非法（同级不能重名 / 不能超过两级）</div>
+      </div>
       <div class="side-sec">回顾</div>
       <div class="side-item" :class="{ on: view === 'hist' }" @click="view = 'hist'">📈 年度统计与总结</div>
       <div class="legend">

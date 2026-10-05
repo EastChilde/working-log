@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from "vue";
 import { useTaskStore, todayKey } from "../stores/tasks";
-import { getCurrentWindow, currentMonitor, PhysicalPosition, PhysicalSize } from "@tauri-apps/api/window";
+import { getCurrentWindow, currentMonitor, cursorPosition, PhysicalPosition, PhysicalSize } from "@tauri-apps/api/window";
 import type { Task } from "../types";
 
 const store = useTaskStore();
@@ -20,17 +20,17 @@ const minimized = ref(false);
 /** 本次展开是否由 hover 触发（true 则鼠标移开自动收回） */
 const autoPeek = ref(false);
 let savedGeom: { x: number; y: number; w: number; h: number } | null = null;
-const SIDE_W = 18, SIDE_H = 64;   // 左右侧边拉手（竖排）
-const EDGE_W = 64, EDGE_H = 18;   // 上下横边拉手（横排）
+let lastExpandSize = { w: 310, h: 440 }; // 最近一次展开尺寸（停靠收缩后恢复用，无几何记忆时兜底）
+const SLIM = 8;                   // 贴边条厚度（px）：侧边停靠露全高竖条、上下停靠露全宽横条
 const DOCK_KEY = "sticky-dock-v1";
 const POS_KEY = "sticky-pos-v1";  // 展开态窗口几何记忆
-const SNAP_PX = 32;               // 距屏幕边多少像素内松手 → 自动吸附
+const SNAP_PX = 80;               // 距屏幕边多少像素内松手 → 自动吸附（32 太苛刻，用户"放到边上"经常差几十像素）
 const PEEK_DELAY = 700;           // hover 展开后鼠标移开多久自动收回
 let lastDockTs = 0;               // 收起时间戳：短暂冷却，防收起/展开循环抖动
 
 /** 几何有效性：必须明显大于拉手尺寸，防止把 tab 尺寸当展开几何持久化（污染死循环） */
 function validGeom(g: { x: number; y: number; w: number; h: number } | null | undefined): g is { x: number; y: number; w: number; h: number } {
-  return !!g && g.w > SIDE_W + 60 && g.h > SIDE_H + 60;
+  return !!g && g.w > SLIM + 60 && g.h > SLIM + 60;
 }
 function readStoredPos(): { x: number; y: number; w: number; h: number } | null {
   try {
@@ -56,8 +56,8 @@ function persistDock(off: number) {
 const tabVisible = ref(false); // 拉手覆盖层：停靠中/停靠后显示，展开完成后隐藏
 let transSeq = 0;              // 过渡序号：新过渡发起后旧过渡自动让位
 
-/** 位置缓动滑行：easeOutCubic，约 180ms，每帧一次 setPosition（无重排） */
-function slideTo(tx: number, ty: number, seq: number = ++transSeq, dur = 180) {
+/** 位置缓动滑行：easeOutCubic，约 220ms，每帧一次 setPosition（无重排） */
+function slideTo(tx: number, ty: number, seq: number = ++transSeq, dur = 220) {
   return new Promise<void>((resolve) => {
     if (!win) return resolve();
     win.outerPosition()
@@ -78,24 +78,78 @@ function slideTo(tx: number, ty: number, seq: number = ++transSeq, dur = 180) {
   });
 }
 
-/** 停靠到指定边：尺寸不变，滑出屏幕只留拉手一侧 18px 在屏内 */
+/** 停靠到指定边。
+ * 全尺寸收起：先整窗滑向边缘（动画），到位后把窗口收缩为条尺寸并完全留在屏内——
+ * 旧方案把大窗口留在屏外，WebView2 会因窗口不可见而挂起输入，导致细条唤不出（进出几次后失灵）；
+ * 条状态换边：直接以条尺寸滑到新边贴屏内位置。 */
 async function dockTo(edge: DockEdge) {
   if (!win) return;
   const seq = ++transSeq;
   const mon = await currentMonitor();
   if (!mon) return;
+  const m = mon.size;
   const [pos, size] = [await win.outerPosition(), await win.innerSize()];
-  const m = mon.size, w = size.width, h = size.height;
   let x: number, y: number, off: number;
-  if (edge === "right") { x = m.width - SIDE_W; y = clamp(pos.y, 0, m.height - SIDE_H); off = y; }
-  else if (edge === "left") { x = -(w - SIDE_W); y = clamp(pos.y, 0, m.height - SIDE_H); off = y; }
-  else if (edge === "top") { y = -(h - EDGE_H); x = clamp(pos.x, 0, m.width - EDGE_W); off = x; }
-  else { y = m.height - EDGE_H; x = clamp(pos.x, 0, m.width - EDGE_W); off = x; }
+
+  if (minimized.value) {
+    // 细条拖拽换边：变成目标方向的条尺寸后整条滑到新边（全程在屏内）
+    const tw = edge === "left" || edge === "right" ? SLIM : lastExpandSize.w;
+    const th = edge === "left" || edge === "right" ? lastExpandSize.h : SLIM;
+    if (tw !== size.width || th !== size.height) {
+      try { await win.setSize(new PhysicalSize(tw, th)); } catch { /* ignore */ }
+    }
+    // 回读实际尺寸：若被系统最小尺寸钳制，按真实尺寸计算贴边位置
+    let aw = tw, ah = th;
+    try { const asz = await win.innerSize(); aw = asz.width; ah = asz.height; } catch { /* ignore */ }
+    if (edge === "right") { x = aw <= SLIM ? m.width - aw : m.width - SLIM; y = clamp(pos.y, 0, m.height - ah); off = y; }
+    else if (edge === "left") { x = aw <= SLIM ? 0 : -(aw - SLIM); y = clamp(pos.y, 0, m.height - ah); off = y; }
+    else if (edge === "top") { y = ah <= SLIM ? 0 : -(ah - SLIM); x = clamp(pos.x, 0, m.width - aw); off = x; }
+    else { y = ah <= SLIM ? m.height - ah : m.height - SLIM; x = clamp(pos.x, 0, m.width - aw); off = x; }
+    dockEdge.value = edge;
+    autoPeek.value = false;
+    tabVisible.value = true;
+    await slideTo(x, y, seq);
+    if (seq !== transSeq) return;
+    minimized.value = true;
+    persistDock(off);
+    lastDockTs = Date.now();
+    return;
+  }
+
+  // 全尺寸收起：滑动阶段目标（窗口大部分出屏，仅供动画）
+  if (edge === "right") { x = m.width - SLIM; y = clamp(pos.y, 0, m.height - size.height); off = y; }
+  else if (edge === "left") { x = -(size.width - SLIM); y = clamp(pos.y, 0, m.height - size.height); off = y; }
+  else if (edge === "top") { y = -(size.height - SLIM); x = clamp(pos.x, 0, m.width - size.width); off = x; }
+  else { y = m.height - SLIM; x = clamp(pos.x, 0, m.width - size.width); off = x; }
   dockEdge.value = edge;
   autoPeek.value = false;
-  tabVisible.value = true; // 拉手骑在面板前缘一起滑向边缘
+  tabVisible.value = true; // 条骑在窗口前缘一起滑向边缘
   await slideTo(x, y, seq);
   if (seq !== transSeq) return;
+  // 到位后收缩为条尺寸并锁定到屏幕内边缘（细条窗口全程可见，输入不会被挂起）
+  const dw = edge === "left" || edge === "right" ? SLIM : size.width;
+  const dh = edge === "left" || edge === "right" ? size.height : SLIM;
+  let aw = dw, ah = dh;
+  try {
+    // IPC 偶发卡死兜底：超时不等待，状态机照常收口（setSize 晚到也会收敛到正确几何）
+    await Promise.race([
+      win.setSize(new PhysicalSize(dw, dh)).catch(() => { /* ignore */ }),
+      new Promise((r) => setTimeout(r, 400)),
+    ]);
+    // 回读实际尺寸：若被系统最小尺寸钳制，按真实尺寸对齐贴边位置（条侧贴屏幕边）
+    try {
+      const asz = await Promise.race([win.innerSize(), new Promise((r) => setTimeout(r, 300))]);
+      if (asz) { aw = asz.width; ah = asz.height; }
+    } catch { /* ignore */ }
+  } catch { /* ignore */ }
+  const fx = edge === "left" ? (aw <= SLIM ? 0 : -(aw - SLIM)) : edge === "right" ? (aw <= SLIM ? m.width - aw : m.width - SLIM) : x;
+  const fy = edge === "top" ? (ah <= SLIM ? 0 : -(ah - SLIM)) : edge === "bottom" ? (ah <= SLIM ? m.height - ah : m.height - SLIM) : y;
+  try {
+    await Promise.race([
+      win.setPosition(new PhysicalPosition(fx, fy)).catch(() => { /* ignore */ }),
+      new Promise((r) => setTimeout(r, 400)),
+    ]);
+  } catch { /* ignore */ }
   minimized.value = true;
   persistDock(off);
   lastDockTs = Date.now();
@@ -107,7 +161,7 @@ async function minimizeToEdge() {
   try {
     const [p, s] = [await win.outerPosition(), await win.innerSize()];
     const cand = { x: p.x, y: p.y, w: s.width, h: s.height };
-    if (validGeom(cand)) { savedGeom = cand; persistPos(cand); }
+    if (validGeom(cand)) { savedGeom = cand; persistPos(cand); lastExpandSize = { w: cand.w, h: cand.h }; }
   } catch { /* ignore */ }
   try { await dockTo(dockEdge.value); } catch (e) { console.error("minimize failed", e); }
 }
@@ -117,32 +171,71 @@ function clamp(v: number | undefined, lo: number, hi: number): number {
   return Math.max(lo, Math.min(n, hi));
 }
 
-async function restoreFromEdge() {
-  if (!win) return;
-  const seq = ++transSeq;
-  const g = validGeom(savedGeom) ? savedGeom : readStoredPos();
-  minimized.value = false; // 立即切回面板 DOM，整窗从屏幕边缘外滑入
-  if (g) {
-    await slideTo(g.x, g.y, seq);
-    if (seq === transSeq) tabVisible.value = false;
-    return;
-  }
-  // 无有效展开几何：滑到停靠边内侧就近位置
+/** 光标到四条屏幕边的距离 → 最近边。
+ * 用光标而不是窗口矩形判边：拖拽抓握点有偏移（抓标题栏中部时窗口顶边离屏幕顶还差几十像素），
+ * 窗口矩形距离会把「碰顶部」误判成贴其它近边 */
+async function nearestEdgeByCursor(): Promise<{ edge: DockEdge; dist: number } | null> {
   try {
     const mon = await currentMonitor();
-    if (!mon) return;
-    const [pos, size] = [await win.outerPosition(), await win.innerSize()];
-    const m = mon.size;
-    const x = dockEdge.value === "left" ? 24 : dockEdge.value === "right" ? m.width - size.width - 24 : pos.x;
-    const y = dockEdge.value === "top" ? 24 : dockEdge.value === "bottom" ? m.height - size.height - 24 : pos.y;
-    await slideTo(clamp(x, 0, Math.max(0, m.width - size.width)), clamp(y, 0, Math.max(0, m.height - size.height)), seq);
-    if (seq === transSeq) tabVisible.value = false;
-  } catch { /* ignore */ }
+    if (!mon) return null;
+    const c = await cursorPosition();
+    const d: Record<DockEdge, number> = {
+      left: c.x - mon.position.x,
+      right: mon.position.x + mon.size.width - c.x,
+      top: c.y - mon.position.y,
+      bottom: mon.position.y + mon.size.height - c.y,
+    };
+    const edge = (Object.keys(d) as DockEdge[]).reduce((a, b) => (d[a] <= d[b] ? a : b));
+    return { edge, dist: d[edge] };
+  } catch { return null; }
 }
 
-/** hover 拉手 → 自动滑出（不抢焦点）；收起后短暂冷却防止边缘抖动 */
+/** 恢复展开（hover 或点击条触发）。
+ * setSize 加 400ms 超时兜底：Tauri IPC 在此环境偶发卡死，若同步等待会把状态机打死在
+ * 「窗口仍是条尺寸 + DOM 已切展开态」的中间态 —— 此后 hover 永远无效（mini-tab 已不存在）。
+ * 超时后照常走定位滑动：setSize 即便晚到，最终几何也会收敛正确 */
+let restoring = false;
+async function restoreFromEdge() {
+  if (!win || restoring) return;
+  restoring = true;
+  try {
+    const seq = ++transSeq;
+    const g = validGeom(savedGeom) ? savedGeom : readStoredPos();
+    const w = g ? g.w : lastExpandSize.w;
+    const h = g ? g.h : lastExpandSize.h;
+    minimized.value = false; // 立即切回面板 DOM
+    await Promise.race([
+      win.setSize(new PhysicalSize(w, h)).catch(() => { /* ignore */ }),
+      new Promise((r) => setTimeout(r, 400)),
+    ]);
+    try {
+      const mon = await currentMonitor();
+      if (mon) {
+        let x: number, y: number;
+        if (g) {
+          x = clamp(g.x, 0, Math.max(0, mon.size.width - w));
+          y = clamp(g.y, 0, Math.max(0, mon.size.height - h));
+        } else {
+          const pos = await win.outerPosition();
+          x = dockEdge.value === "left" ? 24 : dockEdge.value === "right" ? mon.size.width - w - 24 : pos.x;
+          y = dockEdge.value === "top" ? 24 : dockEdge.value === "bottom" ? mon.size.height - h - 24 : pos.y;
+          x = clamp(x, 0, Math.max(0, mon.size.width - w));
+          y = clamp(y, 0, Math.max(0, mon.size.height - h));
+        }
+        await slideTo(x, y, seq);
+      }
+    } catch { /* ignore */ }
+    if (seq === transSeq) tabVisible.value = false; // 无论成败都收掉条，避免条罩在面板上
+  } finally {
+    restoring = false;
+  }
+}
+
+/** hover 条 → 自动滑出（不抢焦点）；收起后短暂冷却防止边缘抖动。
+ * 判定用 tabVisible（条是否在）而不是 minimized：IPC 卡死可能把 minimized 打成 false
+ * 而窗口还是条尺寸，此时 hover 仍需能救回来 */
 async function peekExpand() {
-  if (!win || !minimized.value) return;
+  if (!win || !tabVisible.value || restoring) return;
   if (Date.now() - lastDockTs < 350) return;
   autoPeek.value = true;
   try { await restoreFromEdge(); } catch { /* ignore */ }
@@ -197,7 +290,15 @@ function startWindowDrag(e: MouseEvent, onDrop: (moved: boolean) => void) {
           else if (changed && ++stable >= 3) finish();
         } catch { /* ignore */ }
       }, 33);
-      win!.startDragging().then(finish, finish);
+      // 松手后必须做一次最终位置对比：若拖拽期间 JS 被模态循环冻结，
+      // 轮询从未观察到移动（changed 恒 false），仅靠轮询会误判"未移动"导致贴边吸附永不触发
+      win!.startDragging().then(async () => {
+        try {
+          const p = await win!.outerPosition();
+          if (p.x !== p0.x || p.y !== p0.y) changed = true;
+        } catch { /* ignore */ }
+        finish();
+      }, finish);
     })
     .catch(() => { /* ignore */ });
 }
@@ -210,19 +311,11 @@ function onHeadDown(e: MouseEvent) {
   startWindowDrag(e, async (moved) => {
     if (!moved) return;
     try {
-      const mon = await currentMonitor();
-      if (!mon) return;
       const pos = await win!.outerPosition();
       const size = await win!.innerSize();
-      const dist: Record<DockEdge, number> = {
-        left: pos.x,
-        right: mon.size.width - pos.x - size.width,
-        top: pos.y,
-        bottom: mon.size.height - pos.y - size.height,
-      };
-      const edge = (Object.keys(dist) as DockEdge[]).reduce((a, b) => (dist[a] <= dist[b] ? a : b));
-      if (dist[edge] < SNAP_PX) {
-        dockEdge.value = edge;
+      // 用光标判边：碰哪条边就贴哪条边（窗口矩形距离受抓握点偏移影响会误判）
+      const near = await nearestEdgeByCursor();
+      if (near && near.dist < SNAP_PX) {
         await snapToEdge();
       } else {
         const cand = { x: pos.x, y: pos.y, w: size.width, h: size.height };
@@ -250,19 +343,26 @@ async function snapToEdge() {
       const [p, s] = [await win.outerPosition(), await win.innerSize()];
       savedGeom = { x: p.x, y: p.y, w: s.width, h: s.height };
       persistPos(savedGeom);
+      lastExpandSize = { w: s.width, h: s.height };
     } catch { /* ignore */ }
   }
   const mon = await currentMonitor();
   if (!mon) return;
   const [pos, size] = [await win.outerPosition(), await win.innerSize()];
-  const m = mon.size;
-  const d = {
-    left: pos.x,
-    right: m.width - pos.x - size.width,
-    top: pos.y,
-    bottom: m.height - pos.y - size.height,
-  };
-  const edge = (Object.keys(d) as DockEdge[]).reduce((a, b) => (d[a] <= d[b] ? a : b));
+  // 判边优先用光标位置（碰哪条边贴哪条边）；读不到光标再退回窗口矩形距离
+  const near = await nearestEdgeByCursor();
+  let edge: DockEdge;
+  if (near) {
+    edge = near.edge;
+  } else {
+    const d = {
+      left: pos.x,
+      right: mon.size.width - pos.x - size.width,
+      top: pos.y,
+      bottom: mon.size.height - pos.y - size.height,
+    };
+    edge = (Object.keys(d) as DockEdge[]).reduce((a, b) => (d[a] <= d[b] ? a : b));
+  }
   await dockTo(edge);
 }
 
@@ -329,19 +429,44 @@ async function add() {
 
 onMounted(() => {
   store.initSync();
+  // ---- 状态机自愈哨兵 ----
+  // IPC 偶发卡死可能把状态机打死在「窗口已是条尺寸 + DOM 还是展开态」：
+  // 此时 mini-tab 不存在，hover 永远无效。哨兵发现这种错位就把状态翻回条模式。
+  if (win) {
+    window.setInterval(() => {
+      if (restoring || minimized.value) return;
+      const dw = document.documentElement.clientWidth;
+      const dh = document.documentElement.clientHeight;
+      if (dw <= SLIM + 2 || dh <= SLIM + 2) {
+        minimized.value = true;
+        tabVisible.value = true;
+      }
+    }, 800);
+  }
   // 恢复上次的展开位置/尺寸
   if (win) {
     const g = readStoredPos();
     if (g) {
       void win.setSize(new PhysicalSize(g.w, g.h)).catch(() => { /* ignore */ });
-      void win.setPosition(new PhysicalPosition(g.x, g.y)).catch(() => { /* ignore */ });
+      // 恢复位置兜底：完整收进屏幕内。
+      // 贴边吸附会把几乎贴边的松手位置存入记忆，原样恢复会让便签几乎全在屏外（看起来像消失）
+      void (async () => {
+        try {
+          const mon = await currentMonitor();
+          const x = mon ? clamp(g.x, 0, Math.max(0, mon.size.width - g.w)) : g.x;
+          const y = mon ? clamp(g.y, 0, Math.max(0, mon.size.height - g.h)) : g.y;
+          await win.setPosition(new PhysicalPosition(x, y));
+        } catch {
+          void win.setPosition(new PhysicalPosition(g.x, g.y)).catch(() => { /* ignore */ });
+        }
+      })();
     }
   }
 });
 </script>
 
 <template>
-  <!-- 贴边拉手：停靠时骑在窗口可见侧边缘；鼠标移过自动滑出；按住可拖拽换边 -->
+  <!-- 贴边条：停靠时露出与面板同宽/同高的半透明细条；鼠标移过自动滑出；按住可拖拽换边 -->
   <div
     v-if="tabVisible"
     class="mini-tab"
@@ -349,7 +474,7 @@ onMounted(() => {
     title="移过来自动展开 · 按住拖拽换边"
     @mouseenter="peekExpand"
     @mousedown="onTabDown"
-  >便签</div>
+  ></div>
 
   <div v-else class="sticky" @mouseenter="cancelPeekHide" @mouseleave="schedulePeekHide">
     <div class="s-head" @mousedown="onHeadDown">
@@ -448,48 +573,33 @@ body {
 .s-sum b.low { background: rgba(52, 185, 111, 0.14); color: #238a50; }
 .s-sum b.low i { background: #34b96f; }
 
-/* 贴边拉手：小巧、随吸附方向贴在窗口可见侧边缘，可拖拽 */
+/* 贴边条：与面板同宽（上下停靠）/同高（左右停靠）的半透明细条；
+ * 平时低调蛰伏，hover 点亮发光 —— 像从屏幕边缘长出来的一条琥珀色薄边 */
 .mini-tab {
   position: fixed;
   display: flex;
   align-items: center;
   justify-content: center;
-  background: linear-gradient(180deg, #fdf6cf 0%, #f4e29a 100%);
-  border: 1px solid #e5cf7c;
-  color: #8a7a30;
-  font-weight: 700;
-  font-size: 11px;
+  background: linear-gradient(180deg, rgba(250, 238, 180, 0.82), rgba(240, 220, 140, 0.72));
   cursor: grab;
   user-select: none;
-  transition: background 0.15s, box-shadow 0.15s;
+  opacity: 0.7;
+  transition: opacity 0.18s, background 0.18s, box-shadow 0.18s;
 }
 .mini-tab:hover {
-  background: linear-gradient(180deg, #fffbe0 0%, #f9ecb4 100%);
-  box-shadow: 0 2px 10px rgba(240, 200, 60, 0.45);
+  opacity: 1;
+  background: linear-gradient(180deg, #fff8d6, #f6e6a2);
 }
 .mini-tab:active { cursor: grabbing; }
-.mini-tab.edge-left,
-.mini-tab.edge-right {
-  width: 18px;
-  height: 64px;
-  writing-mode: vertical-lr;
-  letter-spacing: 3px;
-}
-.mini-tab.edge-top,
-.mini-tab.edge-bottom {
-  width: 64px;
-  height: 18px;
-  letter-spacing: 3px;
-}
-/* 拉手贴在窗口可见侧：右停靠=窗口左缘可见，左停靠=窗口右缘可见，上下同理 */
-.mini-tab.edge-right { left: 0; top: 50%; transform: translateY(-50%); }
-.mini-tab.edge-left { right: 0; top: 50%; transform: translateY(-50%); }
-.mini-tab.edge-top { bottom: 0; left: 50%; transform: translateX(-50%); }
-.mini-tab.edge-bottom { top: 0; left: 50%; transform: translateX(-50%); }
-.mini-tab.edge-left { border-left: none; border-radius: 0 6px 6px 0; box-shadow: 2px 2px 8px rgba(0, 0, 0, 0.18); }
-.mini-tab.edge-right { border-right: none; border-radius: 6px 0 0 6px; box-shadow: -2px 2px 8px rgba(0, 0, 0, 0.18); }
-.mini-tab.edge-top { border-top: none; border-radius: 0 0 6px 6px; box-shadow: 0 2px 8px rgba(0, 0, 0, 0.18); }
-.mini-tab.edge-bottom { border-bottom: none; border-radius: 6px 6px 0 0; box-shadow: 0 -2px 8px rgba(0, 0, 0, 0.18); }
+/* 条铺满窗口可见侧：贴屏幕边缘一侧平直，内侧圆角 + 亮线 + 柔和投影 */
+.mini-tab.edge-right { left: 0; top: 0; width: 8px; height: 100%; border-left: 1px solid rgba(214, 190, 105, 0.9); border-radius: 6px 0 0 6px; box-shadow: -2px 0 10px rgba(0, 0, 0, 0.16); }
+.mini-tab.edge-left  { right: 0; top: 0; width: 8px; height: 100%; border-right: 1px solid rgba(214, 190, 105, 0.9); border-radius: 0 6px 6px 0; box-shadow: 2px 0 10px rgba(0, 0, 0, 0.16); }
+.mini-tab.edge-top    { bottom: 0; left: 0; width: 100%; height: 8px; border-bottom: 1px solid rgba(214, 190, 105, 0.9); border-radius: 0 0 6px 6px; box-shadow: 0 2px 10px rgba(0, 0, 0, 0.16); }
+.mini-tab.edge-bottom { top: 0; left: 0; width: 100%; height: 8px; border-top: 1px solid rgba(214, 190, 105, 0.9); border-radius: 6px 6px 0 0; box-shadow: 0 -2px 10px rgba(0, 0, 0, 0.16); }
+.mini-tab.edge-right:hover { box-shadow: -2px 0 14px rgba(240, 200, 60, 0.5); }
+.mini-tab.edge-left:hover  { box-shadow: 2px 0 14px rgba(240, 200, 60, 0.5); }
+.mini-tab.edge-top:hover   { box-shadow: 0 2px 14px rgba(240, 200, 60, 0.5); }
+.mini-tab.edge-bottom:hover { box-shadow: 0 -2px 14px rgba(240, 200, 60, 0.5); }
 .s-date { font-weight: 700; font-size: 12px; color: #8a7a30; flex: 1; }
 .s-btns { display: flex; gap: 4px; }
 .s-btn {

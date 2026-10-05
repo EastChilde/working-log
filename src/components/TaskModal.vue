@@ -53,19 +53,32 @@ function pickPri(v: Task["priority"]) {
   pri.value = pri.value === v ? null : v;
 }
 
-/* ---------- 标签选择 / 新建 ---------- */
+/* ---------- 标签选择 / 新建（二级：顶级无子级的直接当胶囊；有子级的做分组头，任务只打子标签） ---------- */
+const tagGroups = computed(() => {
+  const roots = store.tags.filter((t) => !t.parent_id);
+  const hasKids = (id: string) => store.tags.some((c) => c.parent_id === id);
+  return {
+    loose: roots.filter((r) => !hasKids(r.id)),
+    groups: roots
+      .filter((r) => hasKids(r.id))
+      .map((r) => ({ parent: r, children: store.tags.filter((c) => c.parent_id === r.id) })),
+  };
+});
+
 function toggleTag(id: string) {
   tags.value = tags.value.includes(id) ? tags.value.filter((x) => x !== id) : [...tags.value, id];
 }
 const newTagOpen = ref(false);
 const newTagName = ref("");
 const newTagColor = ref<TagColor>("teal");
+const newTagParent = ref<string | null>(null);
 const newTagErr = ref(false);
 const newTagInput = ref<HTMLInputElement | null>(null);
 function openNewTag() {
   newTagOpen.value = true;
   newTagName.value = "";
   newTagErr.value = false;
+  newTagParent.value = null;
   newTagColor.value = TAG_COLORS[store.tags.length % TAG_COLORS.length]; // 色板顺序轮转，少翻页
   nextTick(() => newTagInput.value?.focus());
 }
@@ -73,12 +86,13 @@ function closeNewTag() {
   newTagOpen.value = false;
   newTagName.value = "";
   newTagErr.value = false;
+  newTagParent.value = null;
 }
 async function addTag() {
   const name = newTagName.value.trim();
   if (!name) { newTagInput.value?.focus(); return; }
-  const t = await store.addTag(name, newTagColor.value);
-  if (!t) { newTagErr.value = true; newTagInput.value?.focus(); return; } // 重名
+  const t = await store.addTag(name, newTagColor.value, newTagParent.value);
+  if (!t) { newTagErr.value = true; newTagInput.value?.focus(); return; } // 同级重名或归属无效
   tags.value = [...tags.value, t.id]; // 新建的标签自动选中
   closeNewTag();
 }
@@ -212,7 +226,7 @@ window.addEventListener("keydown", onKey);
             <label class="f-label">标签（可多选）</label>
             <div class="tag-sel">
               <button
-                v-for="t in store.tags"
+                v-for="t in tagGroups.loose"
                 :key="t.id"
                 type="button"
                 class="tag-opt"
@@ -222,6 +236,33 @@ window.addEventListener("keydown", onKey);
                 <i class="td" :style="{ background: TAG_HEX[t.color] }"></i>{{ t.name }}
               </button>
               <button v-if="!newTagOpen" type="button" class="tag-new-btn" @click="openNewTag">＋ 新建标签</button>
+            </div>
+            <div v-for="g in tagGroups.groups" :key="g.parent.id" class="tag-group">
+              <div class="tag-group-head">
+                <i class="td" :style="{ background: TAG_HEX[g.parent.color] }"></i>{{ g.parent.name }}
+                <span class="tag-group-sub">子标签</span>
+                <!-- 兼容旧数据：该任务直接挂了父标签时给出可移除的胶囊 -->
+                <button
+                  v-if="tags.includes(g.parent.id)"
+                  type="button"
+                  class="tag-opt"
+                  :class="'on tg-' + g.parent.color"
+                  title="此任务直接挂了父标签（旧数据），点此摘除；建议改挂子标签"
+                  @click="toggleTag(g.parent.id)"
+                >{{ g.parent.name }} ✕</button>
+              </div>
+              <div class="tag-sel" style="padding-left:12px;">
+                <button
+                  v-for="t in g.children"
+                  :key="t.id"
+                  type="button"
+                  class="tag-opt"
+                  :class="[tags.includes(t.id) ? 'on tg-' + t.color : 'off']"
+                  @click="toggleTag(t.id)"
+                >
+                  <i class="td" :style="{ background: TAG_HEX[t.color] }"></i>{{ t.name }}
+                </button>
+              </div>
             </div>
             <div v-if="newTagOpen" class="tag-new" style="border-top:none;padding-top:2px;margin-top:8px;">
               <div class="tag-new-form">
@@ -234,6 +275,10 @@ window.addEventListener("keydown", onKey);
                   :class="{ err: newTagErr }"
                   @keydown.enter.prevent="addTag"
                 />
+                <select v-model="newTagParent" class="tag-parent-sel" title="选择归属：留空为顶级标签">
+                  <option :value="null">顶级标签</option>
+                  <option v-for="r in store.tags.filter(t => !t.parent_id)" :key="r.id" :value="r.id">归属：{{ r.name }}</option>
+                </select>
                 <div class="color-dots">
                   <button
                     v-for="c in TAG_COLORS"
@@ -250,7 +295,7 @@ window.addEventListener("keydown", onKey);
               </div>
             </div>
             <div class="tm-hint" style="text-align:left;padding:6px 0 0;">
-              {{ newTagErr ? '已有同名标签，换一个名字' : '标签全局共用，新建一次所有任务都能用 · Enter 快速添加' }}
+              {{ newTagErr ? '同级已有同名标签，换一个名字' : '标签最多两级：父标签作分组聚合，任务打子标签 · Enter 快速添加' }}
             </div>
           </div>
         </div>

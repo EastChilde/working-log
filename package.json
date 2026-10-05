@@ -1,11 +1,11 @@
 {
   "name": "working-log",
   "private": true,
-  "version": "0.3.0",
+  "version": "0.3.1",
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "vite build",
+    "build": "vite build --emptyOutDir false",
     "preview": "vite preview",
     "tauri": "tauri"
   },

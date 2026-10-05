@@ -7,6 +7,8 @@ export interface Tag {
   id: string;
   name: string;
   color: TagColor;
+  /** 父标签 id；null = 顶级标签。最多两级：父=聚合视图，任务只打子标签 */
+  parent_id: string | null;
 }
 
 /** 标签色板：顺序即新建标签时色点顺序；hex 与 styles.css 中 tg-* 保持一致 */

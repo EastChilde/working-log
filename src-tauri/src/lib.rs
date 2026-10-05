@@ -68,6 +68,24 @@ pub fn run() {
             ALTER TABLE task ADD COLUMN tags TEXT NOT NULL DEFAULT '[]';
         ",
         kind: MigrationKind::Up,
+    },
+    Migration {
+        version: 3,
+        description: "二级标签: tag_def 加 parent_id, 重名约束放宽为同层级查重",
+        sql: "
+            CREATE TABLE tag_def_new (
+                id TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                color TEXT NOT NULL DEFAULT 'blue',
+                sort INTEGER NOT NULL DEFAULT 0,
+                parent_id TEXT
+            );
+            INSERT INTO tag_def_new (id, name, color, sort, parent_id)
+                SELECT id, name, color, sort, NULL FROM tag_def;
+            DROP TABLE tag_def;
+            ALTER TABLE tag_def_new RENAME TO tag_def;
+        ",
+        kind: MigrationKind::Up,
     }];
 
     tauri::Builder::default()

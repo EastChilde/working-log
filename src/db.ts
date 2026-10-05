@@ -46,6 +46,23 @@ const MIGRATIONS = [
       ALTER TABLE task ADD COLUMN tags TEXT NOT NULL DEFAULT '[]';
     `,
   },
+  {
+    version: 3,
+    description: "二级标签：tag_def 加 parent_id，重名约束放宽为同层级查重（SQLite 无法去约束，重建表）",
+    sql: `
+      CREATE TABLE tag_def_new (
+        id TEXT PRIMARY KEY,
+        name TEXT NOT NULL,
+        color TEXT NOT NULL DEFAULT 'blue',
+        sort INTEGER NOT NULL DEFAULT 0,
+        parent_id TEXT
+      );
+      INSERT INTO tag_def_new (id, name, color, sort, parent_id)
+        SELECT id, name, color, sort, NULL FROM tag_def;
+      DROP TABLE tag_def;
+      ALTER TABLE tag_def_new RENAME TO tag_def;
+    `,
+  },
 ];
 
 function uuid(): string {
@@ -149,17 +166,34 @@ export const repo = {
   async listTags(): Promise<Tag[]> {
     if (isTauri) {
       const db = await getDb();
-      return (await db.select("SELECT * FROM tag_def ORDER BY sort ASC, name ASC")) as Tag[];
+      const rows = (await db.select("SELECT * FROM tag_def ORDER BY sort ASC, name ASC")) as any[];
+      return rows.map((r) => ({ ...r, parent_id: r.parent_id ?? null }));
     }
-    return localLoadTags();
+    return localLoadTags().map((t) => ({ ...t, parent_id: t.parent_id ?? null }));
   },
 
   async insertTag(t: Tag): Promise<void> {
     if (isTauri) {
       const db = await getDb();
-      await db.execute("INSERT INTO tag_def (id,name,color,sort) VALUES ($1,$2,$3,$4)", [t.id, t.name, t.color, Date.now()]);
+      await db.execute("INSERT INTO tag_def (id,name,color,sort,parent_id) VALUES ($1,$2,$3,$4,$5)", [t.id, t.name, t.color, Date.now(), t.parent_id]);
     } else {
       localSaveTags([...localLoadTags(), t]);
+    }
+  },
+
+  /** 更新标签定义（改名/换色/调整归属；删除父标签时也用它把子标签升级为顶级） */
+  async updateTag(id: string, patch: Partial<Pick<Tag, "name" | "color" | "parent_id">>): Promise<void> {
+    if (isTauri) {
+      const db = await getDb();
+      // 先读现值，patch 只覆盖传入的字段
+      const cur = ((await db.select("SELECT name, color, parent_id FROM tag_def WHERE id = $1", [id])) as any[])[0];
+      if (!cur) return;
+      const name = patch.name ?? cur.name;
+      const color = patch.color ?? cur.color;
+      const parent_id = patch.parent_id !== undefined ? patch.parent_id ?? null : cur.parent_id ?? null;
+      await db.execute("UPDATE tag_def SET name = $2, color = $3, parent_id = $4 WHERE id = $1", [id, name, color, parent_id]);
+    } else {
+      localSaveTags(localLoadTags().map((t) => (t.id === id ? { ...t, ...patch } : t)));
     }
   },
 

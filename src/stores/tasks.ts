@@ -9,6 +9,16 @@ function todayKey(): string {
 
 const isTauri = typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
 
+/** 标签 id 是否位于 target 标签的子树内（含 target 自身）——父标签聚合筛选/计数用 */
+export function inSubtree(tags: Tag[], id: string, target: string): boolean {
+  let cur: string | null = id;
+  while (cur) {
+    if (cur === target) return true;
+    cur = tags.find((t) => t.id === cur)?.parent_id ?? null;
+  }
+  return false;
+}
+
 /** 向所有窗口广播「任务已变更」（仅 Tauri 环境） */
 async function broadcast() {
   if (!isTauri) return;
@@ -72,7 +82,7 @@ export const useTaskStore = defineStore("tasks", {
       let list = state.tasks;
       if (state.scope === "today") list = list.filter((t) => t.created_at === tk && t.status !== "done");
       else if (state.scope === "stay") list = list.filter((t) => t.created_at < tk && (t.status === "todo" || t.status === "doing"));
-      if (state.activeTag) list = list.filter((t) => t.tags.includes(state.activeTag!));
+      if (state.activeTag) list = list.filter((t) => t.tags.some((tid) => inSubtree(state.tags, tid, state.activeTag!)));
       return list;
     },
     /** 树形结构（仅顶层+一层子任务，MVP 足够） */
@@ -188,20 +198,55 @@ export const useTaskStore = defineStore("tasks", {
     },
 
     /* ---------- 标签管理 ---------- */
-    /** 新建标签：重名返回 null（调用方提示），成功返回新标签 */
-    async addTag(name: string, color: TagColor): Promise<Tag | null> {
+    /** 新建标签：同级重名或父级非法返回 null（调用方提示），成功返回新标签
+     *  parentId 非空 = 挂到该顶级标签下成为子标签（最多两级，不允许挂到子标签下） */
+    async addTag(name: string, color: TagColor, parentId: string | null = null): Promise<Tag | null> {
       const n = name.trim();
       if (!n) return null;
-      if (this.tags.some((t) => t.name === n)) return null;
-      const tag: Tag = { id: "g" + Date.now().toString(36) + Math.random().toString(36).slice(2, 6), name: n, color };
+      const pid = parentId ?? null;
+      if (pid) {
+        const parent = this.tags.find((t) => t.id === pid);
+        if (!parent || parent.parent_id) return null; // 父不存在或已是子标签 → 超过两级
+      }
+      if (this.tags.some((t) => t.name === n && (t.parent_id ?? null) === pid)) return null; // 同级重名
+      const tag: Tag = { id: "g" + Date.now().toString(36) + Math.random().toString(36).slice(2, 6), name: n, color, parent_id: pid };
       await repo.insertTag(tag);
       this.tags.push(tag);
       await broadcast(); // 让便签窗口同步标签定义
       return tag;
     },
 
-    /** 删除标签定义，并从所有任务上摘除引用 */
+    /** 编辑标签：改名 / 换色 / 调整归属（挂为某顶级标签的子标签，或升级回顶级）。
+     *  非法操作返回 null：改名后同级重名 / 挂到自己名下 / 自己已有子标签还想当子标签（会超两级） */
+    async editTag(id: string, patch: { name?: string; color?: TagColor; parent_id?: string | null }): Promise<Tag | null> {
+      const tag = this.tags.find((t) => t.id === id);
+      if (!tag) return null;
+      const name = (patch.name ?? tag.name).trim();
+      const color = patch.color ?? tag.color;
+      const pid = patch.parent_id !== undefined ? patch.parent_id ?? null : tag.parent_id ?? null;
+      if (!name) return null;
+      if (pid) {
+        if (pid === id) return null; // 不能挂自己
+        const parent = this.tags.find((t) => t.id === pid);
+        if (!parent || parent.parent_id) return null; // 父不存在或父已是子标签 → 会超两级
+        if (this.tags.some((t) => t.parent_id === id)) return null; // 自己是父标签，不能再成为别人的子标签
+      }
+      // 同级重名校验（排除自己；注意归属变化后按"新的同级"查重）
+      if (this.tags.some((t) => t.id !== id && t.name === name && (t.parent_id ?? null) === pid)) return null;
+      await repo.updateTag(id, { name, color, parent_id: pid });
+      tag.name = name;
+      tag.color = color;
+      tag.parent_id = pid;
+      await broadcast(); // 让便签窗口同步标签定义
+      return tag;
+    },
+
+    /** 删除标签定义：其子标签升级为顶级；任务上的引用一并摘除 */
     async removeTag(id: string) {
+      for (const c of this.tags.filter((t) => t.parent_id === id)) {
+        await repo.updateTag(c.id, { parent_id: null });
+        c.parent_id = null;
+      }
       await repo.deleteTag(id);
       this.tags = this.tags.filter((t) => t.id !== id);
       for (const t of this.tasks.filter((x) => x.tags.includes(id))) {
