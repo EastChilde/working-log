@@ -50,10 +50,11 @@ function persistDock(off: number) {
   try { localStorage.setItem(DOCK_KEY, JSON.stringify({ edge: dockEdge.value, off })); } catch { /* ignore */ }
 }
 
-/* ===== 丝滑停靠：只动位置、不动尺寸 =====
- * 窗口尺寸恒定（展开尺寸），收起 = 整窗滑出屏幕、只留拉手侧的 18px 在屏内；
- * 这样避开了 setSize+setPosition 两次 OS 操作的「跳变」，位置插值天然顺滑 */
-const tabVisible = ref(false); // 拉手覆盖层：停靠中/停靠后显示，展开完成后隐藏
+/* ===== 丝滑停靠：位置与尺寸边缘锚定联动 =====
+ * 收起 = 整窗滑到贴边齐平（内容完整可见）→ 原地以边缘为锚收缩成条，内容 transform 同步「塞入」边缘；
+ * 展开 = 逆过程（从条原地长出）。窗口全程屏内（WebView2 不会因不可见挂起输入），无离屏/透明空档 */
+const tabVisible = ref(false); // 拉手覆盖层：停靠收缩段/停靠后显示，展开完成后隐藏
+const stickyEl = ref<HTMLElement | null>(null); // 内容面板：动画期间需固定像素尺寸 + transform 同步
 let transSeq = 0;              // 过渡序号：新过渡发起后旧过渡自动让位
 
 /** 位置缓动滑行：easeOutCubic，约 220ms，每帧一次 setPosition（无重排） */
@@ -116,43 +117,141 @@ async function dockTo(edge: DockEdge) {
     return;
   }
 
-  // 全尺寸收起：滑动阶段目标（窗口大部分出屏，仅供动画）
-  if (edge === "right") { x = m.width - SLIM; y = clamp(pos.y, 0, m.height - size.height); off = y; }
-  else if (edge === "left") { x = -(size.width - SLIM); y = clamp(pos.y, 0, m.height - size.height); off = y; }
-  else if (edge === "top") { y = -(size.height - SLIM); x = clamp(pos.x, 0, m.width - size.width); off = x; }
-  else { y = m.height - SLIM; x = clamp(pos.x, 0, m.width - size.width); off = x; }
+  // 全尺寸收起（两段式，窗口全程屏内，内容不消失）：
+  // ① 整窗滑到与目标边齐平（内容完整可见，条暂不显示）
+  // ② 以边缘为锚原地收缩为条，内容 transform 同步「塞入」边缘 —— 无离屏/透明空档
+  //    （旧方案整窗滑出屏外只留一条：tab 一显示内容就从 DOM 消失，窗口瞬间离屏再跳回，非常生硬）
+  const flushX = edge === "left" ? 0 : edge === "right" ? m.width - size.width : clamp(pos.x, 0, Math.max(0, m.width - size.width));
+  const flushY = edge === "top" ? 0 : edge === "bottom" ? m.height - size.height : clamp(pos.y, 0, Math.max(0, m.height - size.height));
+  off = edge === "left" || edge === "right" ? flushY : flushX;
   dockEdge.value = edge;
   autoPeek.value = false;
-  tabVisible.value = true; // 条骑在窗口前缘一起滑向边缘
-  await slideTo(x, y, seq);
-  if (seq !== transSeq) return;
-  // 到位后收缩为条尺寸并锁定到屏幕内边缘（细条窗口全程可见，输入不会被挂起）
-  const dw = edge === "left" || edge === "right" ? SLIM : size.width;
-  const dh = edge === "left" || edge === "right" ? size.height : SLIM;
-  let aw = dw, ah = dh;
+  restoring = true; // 收缩途中窗口会小于 SLIM+2，防自愈哨兵抢翻状态
   try {
-    // IPC 偶发卡死兜底：超时不等待，状态机照常收口（setSize 晚到也会收敛到正确几何）
-    await Promise.race([
-      win.setSize(new PhysicalSize(dw, dh)).catch(() => { /* ignore */ }),
-      new Promise((r) => setTimeout(r, 400)),
-    ]);
-    // 回读实际尺寸：若被系统最小尺寸钳制，按真实尺寸对齐贴边位置（条侧贴屏幕边）
-    try {
-      const asz = await Promise.race([win.innerSize(), new Promise((r) => setTimeout(r, 300))]);
-      if (asz) { aw = asz.width; ah = asz.height; }
-    } catch { /* ignore */ }
-  } catch { /* ignore */ }
-  const fx = edge === "left" ? (aw <= SLIM ? 0 : -(aw - SLIM)) : edge === "right" ? (aw <= SLIM ? m.width - aw : m.width - SLIM) : x;
-  const fy = edge === "top" ? (ah <= SLIM ? 0 : -(ah - SLIM)) : edge === "bottom" ? (ah <= SLIM ? m.height - ah : m.height - SLIM) : y;
+    minimized.value = false; // 内容保持可见（v-show，与条共存）
+    await slideTo(flushX, flushY, seq, 200);
+    if (seq !== transSeq) return;
+    tabVisible.value = true; // 条上场，随收缩缘一起落到最终位置
+    await shrinkDock(edge, size.width, size.height, seq, flushX, flushY);
+    if (seq !== transSeq) return;
+    minimized.value = true; // 切到条 DOM（窗口已是条尺寸）
+    clearContentStyles();
+    persistDock(off);
+    lastDockTs = Date.now();
+  } finally {
+    restoring = false;
+  }
+}
+
+/** 内容 transform 同步：固定尺寸的内容按 (w-cw, h-ch) 平移「塞入」边缘侧 */
+function setTuckTransform(edge: DockEdge, el: HTMLElement | null, w: number, h: number, cw: number, ch: number) {
+  if (!el) return;
+  const dx = edge === "left" ? -(w - cw) : edge === "right" ? w - cw : 0;
+  const dy = edge === "top" ? -(h - ch) : edge === "bottom" ? h - ch : 0;
+  el.style.transform = `translate(${dx}px, ${dy}px)`;
+}
+function clearContentStyles() {
+  const el = stickyEl.value;
+  if (el) { el.style.width = ""; el.style.height = ""; el.style.transform = ""; }
+}
+
+/** 停靠收缩：从贴边齐平的全尺寸 (w0×h0) 以边缘为锚收缩到条尺寸。
+ * 每帧 setSize+setPosition 成对（贴边一侧坐标锁定），内容 transform 同步滑入边缘；
+ * 内容固定像素尺寸抵消视口重排 —— 视觉上 = 便签原地缩进屏幕边缘 */
+async function shrinkDock(edge: DockEdge, w0: number, h0: number, seq: number, fx: number, fy: number, dur = 190) {
+  if (!win) return;
+  const mon = await currentMonitor();
+  if (!mon) return;
+  const m = mon.size;
+  const content = stickyEl.value;
+  const tw = edge === "left" || edge === "right" ? SLIM : w0;
+  const th = edge === "top" || edge === "bottom" ? SLIM : h0;
+  if (content) { content.style.width = w0 + "px"; content.style.height = h0 + "px"; }
+  const t0 = performance.now();
+  await new Promise<void>((resolve) => {
+    const iv = window.setInterval(() => {
+      if (seq !== transSeq) { window.clearInterval(iv); return resolve(); }
+      const t = Math.min(1, (performance.now() - t0) / dur);
+      const e = 1 - Math.pow(1 - t, 3);
+      const cw = Math.round(w0 + (tw - w0) * e);
+      const ch = Math.round(h0 + (th - h0) * e);
+      let px = fx, py = fy;
+      if (edge === "right") px = m.width - cw;
+      else if (edge === "bottom") py = m.height - ch;
+      void win!.setSize(new PhysicalSize(cw, ch));
+      void win!.setPosition(new PhysicalPosition(px, py));
+      if (content) setTuckTransform(edge, content, w0, h0, cw, ch);
+      if (t >= 1) { window.clearInterval(iv); return resolve(); }
+    }, 16);
+  });
+  // 收口：最终几何精确落定（带超时兜底，IPC 卡死也不阻塞状态机）
+  const fw = edge === "left" || edge === "right" ? SLIM : w0;
+  const fh = edge === "top" || edge === "bottom" ? SLIM : h0;
+  let ax = fx, ay = fy;
+  if (edge === "right") ax = m.width - fw;
+  else if (edge === "bottom") ay = m.height - fh;
+  await Promise.race([
+    Promise.all([
+      win.setSize(new PhysicalSize(fw, fh)).catch(() => { /* ignore */ }),
+      win.setPosition(new PhysicalPosition(ax, ay)).catch(() => { /* ignore */ }),
+    ]),
+    new Promise((r) => setTimeout(r, 400)),
+  ]);
+}
+
+/** 展开生长：从条尺寸以边缘为锚生长到 (w×h)，内容从边缘侧滑出（shrinkDock 的逆动画） */
+async function growFromEdge(edge: DockEdge, w: number, h: number, seq: number, dur = 190) {
+  if (!win) return;
+  const mon = await currentMonitor();
+  if (!mon) return;
+  const m = mon.size;
+  const content = stickyEl.value;
+  let sw = edge === "left" || edge === "right" ? SLIM : w;
+  let sh = edge === "top" || edge === "bottom" ? SLIM : h;
+  let sx = 0, sy = 0;
   try {
-    await Promise.race([
-      win.setPosition(new PhysicalPosition(fx, fy)).catch(() => { /* ignore */ }),
-      new Promise((r) => setTimeout(r, 400)),
-    ]);
+    const [sz, pos] = await Promise.all([win.innerSize(), win.outerPosition()]);
+    sw = sz.width; sh = sz.height; sx = pos.x; sy = pos.y;
   } catch { /* ignore */ }
-  minimized.value = true;
-  persistDock(off);
-  lastDockTs = Date.now();
+  if (edge === "right") sx = m.width - sw;
+  else if (edge === "left") sx = 0;
+  if (edge === "bottom") sy = m.height - sh;
+  else if (edge === "top") sy = 0;
+  if (content) {
+    content.style.width = w + "px"; content.style.height = h + "px";
+    setTuckTransform(edge, content, w, h, sw, sh);
+  }
+  const t0 = performance.now();
+  await new Promise<void>((resolve) => {
+    const iv = window.setInterval(() => {
+      if (seq !== transSeq) { window.clearInterval(iv); return resolve(); }
+      const t = Math.min(1, (performance.now() - t0) / dur);
+      const e = 1 - Math.pow(1 - t, 3);
+      const cw = Math.round(sw + (w - sw) * e);
+      const ch = Math.round(sh + (h - sh) * e);
+      let px = sx, py = sy;
+      if (edge === "right") px = m.width - cw;
+      else if (edge === "left") px = 0;
+      else if (edge === "bottom") py = m.height - ch;
+      else py = 0;
+      void win!.setSize(new PhysicalSize(cw, ch));
+      void win!.setPosition(new PhysicalPosition(px, py));
+      if (content) setTuckTransform(edge, content, w, h, cw, ch);
+      if (t >= 1) { window.clearInterval(iv); return resolve(); }
+    }, 16);
+  });
+  let ax = sx, ay = sy;
+  if (edge === "right") ax = m.width - w;
+  else if (edge === "left") ax = 0;
+  if (edge === "bottom") ay = m.height - h;
+  else if (edge === "top") ay = 0;
+  await Promise.race([
+    Promise.all([
+      win.setSize(new PhysicalSize(w, h)).catch(() => { /* ignore */ }),
+      win.setPosition(new PhysicalPosition(ax, ay)).catch(() => { /* ignore */ }),
+    ]),
+    new Promise((r) => setTimeout(r, 400)),
+  ]);
 }
 
 /** 收起：记录展开几何后停靠 */
@@ -191,9 +290,9 @@ async function nearestEdgeByCursor(): Promise<{ edge: DockEdge; dist: number } |
 }
 
 /** 恢复展开（hover 或点击条触发）。
- * setSize 加 400ms 超时兜底：Tauri IPC 在此环境偶发卡死，若同步等待会把状态机打死在
- * 「窗口仍是条尺寸 + DOM 已切展开态」的中间态 —— 此后 hover 永远无效（mini-tab 已不存在）。
- * 超时后照常走定位滑动：setSize 即便晚到，最终几何也会收敛正确 */
+ * 两段式：① 从条尺寸以边缘为锚原地生长到展开尺寸，内容从边缘侧滑出（tab 覆盖条区防露馅）；
+ * ② 滑回记忆位置。所有窗口命令加 400ms 超时兜底：Tauri IPC 在此环境偶发卡死，
+ * 即便晚到，最终几何也会收敛正确 */
 let restoring = false;
 async function restoreFromEdge() {
   if (!win || restoring) return;
@@ -203,11 +302,9 @@ async function restoreFromEdge() {
     const g = validGeom(savedGeom) ? savedGeom : readStoredPos();
     const w = g ? g.w : lastExpandSize.w;
     const h = g ? g.h : lastExpandSize.h;
-    minimized.value = false; // 立即切回面板 DOM
-    await Promise.race([
-      win.setSize(new PhysicalSize(w, h)).catch(() => { /* ignore */ }),
-      new Promise((r) => setTimeout(r, 400)),
-    ]);
+    minimized.value = false; // 内容 DOM 上场（条仍覆盖条区，展开完成后才收条）
+    await growFromEdge(dockEdge.value, w, h, seq);
+    if (seq !== transSeq) return;
     try {
       const mon = await currentMonitor();
       if (mon) {
@@ -222,9 +319,10 @@ async function restoreFromEdge() {
           x = clamp(x, 0, Math.max(0, mon.size.width - w));
           y = clamp(y, 0, Math.max(0, mon.size.height - h));
         }
-        await slideTo(x, y, seq);
+        await slideTo(x, y, seq, 200);
       }
     } catch { /* ignore */ }
+    clearContentStyles();
     if (seq === transSeq) tabVisible.value = false; // 无论成败都收掉条，避免条罩在面板上
   } finally {
     restoring = false;
@@ -476,7 +574,8 @@ onMounted(() => {
     @mousedown="onTabDown"
   ></div>
 
-  <div v-else class="sticky" @mouseenter="cancelPeekHide" @mouseleave="schedulePeekHide">
+  <!-- v-show 而非 v-else：停靠/展开动画期间条与内容需同时在场（内容滑入边缘时条覆盖条区防露馅） -->
+  <div v-show="!minimized" ref="stickyEl" class="sticky" @mouseenter="cancelPeekHide" @mouseleave="schedulePeekHide">
     <div class="s-head" @mousedown="onHeadDown">
       <span class="s-date">今日待办 · {{ today.slice(5) }}</span>
       <div class="s-sum">
