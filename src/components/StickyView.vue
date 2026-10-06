@@ -27,6 +27,8 @@ const POS_KEY = "sticky-pos-v1";  // 展开态窗口几何记忆
 const SNAP_PX = 80;               // 距屏幕边多少像素内松手 → 自动吸附（32 太苛刻，用户"放到边上"经常差几十像素）
 const PEEK_DELAY = 700;           // hover 展开后鼠标移开多久自动收回
 let lastDockTs = 0;               // 收起时间戳：短暂冷却，防收起/展开循环抖动
+let dockOff = 0;                  // 条沿贴边方向的起点（屏内局部坐标），贴边接近侦测用
+let dockLen = 0;                  // 条沿贴边方向的长度
 
 /** 几何有效性：必须明显大于拉手尺寸，防止把 tab 尺寸当展开几何持久化（污染死循环） */
 function validGeom(g: { x: number; y: number; w: number; h: number } | null | undefined): g is { x: number; y: number; w: number; h: number } {
@@ -47,6 +49,8 @@ const dockEdge = ref<DockEdge>("right");
 try { dockEdge.value = JSON.parse(localStorage.getItem(DOCK_KEY) || "null")?.edge || "right"; } catch { /* ignore */ }
 
 function persistDock(off: number) {
+  dockOff = off;
+  dockLen = dockEdge.value === "left" || dockEdge.value === "right" ? lastExpandSize.h : lastExpandSize.w;
   try { localStorage.setItem(DOCK_KEY, JSON.stringify({ edge: dockEdge.value, off })); } catch { /* ignore */ }
 }
 
@@ -287,22 +291,44 @@ function clamp(v: number | undefined, lo: number, hi: number): number {
   return Math.max(lo, Math.min(n, hi));
 }
 
-/** 光标到四条屏幕边的距离 → 最近边。
- * 用光标而不是窗口矩形判边：拖拽抓握点有偏移（抓标题栏中部时窗口顶边离屏幕顶还差几十像素），
- * 窗口矩形距离会把「碰顶部」误判成贴其它近边 */
-async function nearestEdgeByCursor(): Promise<{ edge: DockEdge; dist: number } | null> {
+/** 合并判边：光标距离与窗口矩形距离每边取 min，选最近的边。
+ * 只看光标：窗口已贴边但手抓在标题栏中部（离边几十像素）→ 松手不吸附，「明明贴上了却没反应」；
+ * 只看窗口：抓握点偏移会把「碰顶部」误判成贴其它近边（历史 bug）。
+ * 两者取 min 后判边兼吸附，两类场景都命中 */
+async function nearestEdgeCombined(): Promise<{ edge: DockEdge; dist: number } | null> {
+  if (!win) return null;
   try {
     const mon = await currentMonitor();
     if (!mon) return null;
-    const c = await cursorPosition();
-    const d: Record<DockEdge, number> = {
-      left: c.x - mon.position.x,
-      right: mon.position.x + mon.size.width - c.x,
-      top: c.y - mon.position.y,
-      bottom: mon.position.y + mon.size.height - c.y,
+    const [pos, size] = [await win.outerPosition(), await win.innerSize()];
+    const mx = mon.position.x, my = mon.position.y;
+    const wd: Record<DockEdge, number> = {
+      left: pos.x - mx,
+      right: mx + mon.size.width - pos.x - size.width,
+      top: pos.y - my,
+      bottom: my + mon.size.height - pos.y - size.height,
     };
-    const edge = (Object.keys(d) as DockEdge[]).reduce((a, b) => (d[a] <= d[b] ? a : b));
-    return { edge, dist: d[edge] };
+    const pick = (d: Record<DockEdge, number>) => {
+      const pairs = (Object.keys(d) as DockEdge[]).map((k) => [k, d[k]] as const);
+      const [edge, dist] = pairs.reduce((a, b) => (a[1] <= b[1] ? a : b));
+      return { edge, dist };
+    };
+    try {
+      const c = await cursorPosition();
+      const cd: Record<DockEdge, number> = {
+        left: c.x - mx,
+        right: mx + mon.size.width - c.x,
+        top: c.y - my,
+        bottom: my + mon.size.height - c.y,
+      };
+      const d = (Object.keys(wd) as DockEdge[]).reduce(
+        (acc, k) => { acc[k] = Math.min(cd[k], wd[k]); return acc; },
+        {} as Record<DockEdge, number>,
+      );
+      return pick(d);
+    } catch {
+      return pick(wd); // 读不到光标退回窗口矩形
+    }
   } catch { return null; }
 }
 
@@ -428,8 +454,8 @@ function onHeadDown(e: MouseEvent) {
     try {
       const pos = await win!.outerPosition();
       const size = await win!.innerSize();
-      // 用光标判边：碰哪条边就贴哪条边（窗口矩形距离受抓握点偏移影响会误判）
-      const near = await nearestEdgeByCursor();
+      // 合并光标+窗口矩形判边：窗口贴到边（哪怕手抓在标题栏中部）就吸附
+      const near = await nearestEdgeCombined();
       if (near && near.dist < SNAP_PX) {
         await snapToEdge();
       } else {
@@ -463,22 +489,26 @@ async function snapToEdge() {
   }
   const mon = await currentMonitor();
   if (!mon) return;
-  const [pos, size] = [await win.outerPosition(), await win.innerSize()];
-  // 判边优先用光标位置（碰哪条边贴哪条边）；读不到光标再退回窗口矩形距离
-  const near = await nearestEdgeByCursor();
-  let edge: DockEdge;
-  if (near) {
-    edge = near.edge;
-  } else {
-    const d = {
-      left: pos.x,
-      right: mon.size.width - pos.x - size.width,
-      top: pos.y,
-      bottom: mon.size.height - pos.y - size.height,
-    };
-    edge = (Object.keys(d) as DockEdge[]).reduce((a, b) => (d[a] <= d[b] ? a : b));
-  }
+  // 合并光标+窗口矩形判边（贴到边就吸附；抓握偏移不再误判边）
+  const near = await nearestEdgeCombined();
+  const edge: DockEdge = near ? near.edge : "right";
   await dockTo(edge);
+}
+
+/** 程序内自定义缩放：窗口 resizable:false（系统缩放带会覆盖 8px 贴边条，hover 全失效），
+ * 缩放改用 startResizeDragging 走 OS 原生 SC_SIZE 缩放循环；松手后记忆新几何 */
+async function startResize(dir: "East" | "West" | "South" | "SouthEast" | "SouthWest", e: MouseEvent) {
+  if (!win || e.button !== 0) return;
+  e.preventDefault();
+  e.stopPropagation();
+  cancelPeekHide();
+  autoPeek.value = false; // 主动缩放 = 主动使用，之后不自动收回
+  try {
+    await win.startResizeDragging(dir);
+    const [p, s] = [await win.outerPosition(), await win.innerSize()];
+    const cand = { x: p.x, y: p.y, w: s.width, h: s.height };
+    if (validGeom(cand)) { savedGeom = cand; persistPos(cand); lastExpandSize = { w: s.width, h: s.height }; }
+  } catch { /* ignore */ }
 }
 
 /* ===== 紧急程度排序视图 ===== */
@@ -557,6 +587,51 @@ onMounted(() => {
         tabVisible.value = true;
       }
     }, 800);
+    // ---- 贴边侦测轮询（每 220ms）----
+    // ① 停靠中：光标接近贴边区且在条跨度内 → 自动展开。8px 条的 mouseenter 目标太小且
+    //    常收不到（WebView 事件不稳），用全局光标位置判定大幅提升命中率；
+    // ② hover 展开后：窗口在光标下生长时 DOM 收不到 mouseenter，光标随后离开也收不到
+    //    mouseleave —— 光标既不在窗口内也不在贴边区时主动收回。
+    //    全部调用带 300ms 超时兜底，IPC 卡死只跳过本 tick
+    window.setInterval(async () => {
+      if (!win || restoring) return;
+      try {
+        const mon = await Promise.race([currentMonitor(), new Promise<null>((r) => setTimeout(() => r(null), 300))]);
+        if (!mon) return;
+        const c = await Promise.race([cursorPosition(), new Promise<null>((r) => setTimeout(() => r(null), 300))]);
+        if (!c) return;
+        const lx = c.x - mon.position.x, ly = c.y - mon.position.y;
+        const edge = dockEdge.value;
+        const nearDist = edge === "left" ? lx : edge === "right" ? mon.size.width - lx : edge === "top" ? ly : mon.size.height - ly;
+        const along = edge === "left" || edge === "right" ? ly : lx;
+        if (minimized.value) {
+          if (!tabVisible.value || dockLen <= 0) return;
+          const inSpan = along > dockOff - 32 && along < dockOff + dockLen + 32;
+          if (nearDist < 28 && inSpan) await peekExpand();
+        } else if (autoPeek.value) {
+          const rs = await Promise.race([
+            Promise.all([win.outerPosition(), win.innerSize()]),
+            new Promise<null>((r) => setTimeout(() => r(null), 300)),
+          ]);
+          if (!rs) return;
+          const [p, s] = rs;
+          const gx = p.x - mon.position.x, gy = p.y - mon.position.y;
+          const inside = lx >= gx - 4 && lx <= gx + s.width + 4 && ly >= gy - 4 && ly <= gy + s.height + 4;
+          if (!inside) schedulePeekHide();
+        }
+      } catch { /* ignore */ }
+    }, 220);
+    // ---- 手动缩放最小尺寸钳制 ----
+    // 原生 resizable:false 后系统不再管最小尺寸（配置里的 minWidth 会钳制停靠收缩的 setSize）；
+    // 缩得太小就在这里钳回。restoring/minimized 门控避开停靠动画与条状态窗口
+    let clamping = false;
+    void win.onResized(async ({ payload: s }) => {
+      if (restoring || minimized.value || clamping) return;
+      if (s.width >= 240 && s.height >= 300) return;
+      clamping = true;
+      try { await win.setSize(new PhysicalSize(Math.max(240, s.width), Math.max(300, s.height))); } catch { /* ignore */ }
+      clamping = false;
+    });
   }
   // 恢复上次的展开位置/尺寸
   if (win) {
@@ -646,6 +721,14 @@ onMounted(() => {
       <input v-model="input" placeholder="回车添加…" @keydown.enter="add" />
       <button @click="add">＋</button>
     </div>
+
+    <!-- 自定义缩放把手：窗口 resizable:false（系统隐形缩放带会覆盖 8px 贴边条致 hover 失效），
+         缩放改由把手走 OS 原生缩放循环；右下角带可见拖拽标记 -->
+    <div class="rz rz-e" @mousedown="startResize('East', $event)"></div>
+    <div class="rz rz-w" @mousedown="startResize('West', $event)"></div>
+    <div class="rz rz-s" @mousedown="startResize('South', $event)"></div>
+    <div class="rz rz-se" @mousedown="startResize('SouthEast', $event)"></div>
+    <div class="rz rz-sw" @mousedown="startResize('SouthWest', $event)"></div>
   </div>
 </template>
 
@@ -664,7 +747,26 @@ body {
   background: linear-gradient(180deg, #fdf6cf 0%, #fdf1b8 100%);
   border: 1px solid #ecd98a;
   box-shadow: 0 6px 24px rgba(0, 0, 0, 0.18);
+  position: relative;
 }
+/* ===== 自定义缩放把手（不可见热区；右下角带拖拽标记） ===== */
+.rz { position: absolute; z-index: 40; }
+.rz-e  { right: 0; top: 0; width: 6px; height: 100%; cursor: ew-resize; }
+.rz-w  { left: 0; top: 0; width: 6px; height: 100%; cursor: ew-resize; }
+.rz-s  { left: 0; bottom: 0; width: 100%; height: 6px; cursor: ns-resize; }
+.rz-se { right: 0; bottom: 0; width: 16px; height: 16px; cursor: nwse-resize; }
+.rz-sw { left: 0; bottom: 0; width: 16px; height: 16px; cursor: nesw-resize; }
+.rz-se::after {
+  content: "";
+  position: absolute;
+  right: 4px;
+  bottom: 4px;
+  width: 7px;
+  height: 7px;
+  border-right: 2px solid rgba(160, 130, 40, 0.45);
+  border-bottom: 2px solid rgba(160, 130, 40, 0.45);
+}
+.rz-se:hover::after { border-color: rgba(160, 130, 40, 0.85); }
 .s-head {
   display: flex;
   align-items: center;
