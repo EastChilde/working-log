@@ -62,18 +62,24 @@ function slideTo(tx: number, ty: number, seq: number = ++transSeq, dur = 220) {
   return new Promise<void>((resolve) => {
     if (!win) return resolve();
     win.outerPosition()
-      .then((p0) => {
+      .then(async (p0) => {
         if (seq !== transSeq) return resolve();
         const dx = tx - p0.x, dy = ty - p0.y;
         if (Math.abs(dx) < 2 && Math.abs(dy) < 2) return resolve();
         const t0 = performance.now();
-        const iv = window.setInterval(() => {
-          if (seq !== transSeq) { window.clearInterval(iv); return resolve(); }
+        // 逐帧等待 IPC 应用后再走下一帧：fire-and-forget 会让命令在队列里积压，
+        // JS 播完后窗口还在慢慢补帧（细条「延迟回去」的根源）；150ms 兜底防 IPC 卡死拖死动画
+        for (;;) {
+          if (seq !== transSeq) return resolve();
           const t = Math.min(1, (performance.now() - t0) / dur);
           const e = 1 - Math.pow(1 - t, 3);
-          void win!.setPosition(new PhysicalPosition(Math.round(p0.x + dx * e), Math.round(p0.y + dy * e)));
-          if (t >= 1) { window.clearInterval(iv); resolve(); }
-        }, 16);
+          await Promise.race([
+            win!.setPosition(new PhysicalPosition(Math.round(p0.x + dx * e), Math.round(p0.y + dy * e))).catch(() => { /* ignore */ }),
+            new Promise((r) => setTimeout(r, 150)),
+          ]);
+          if (seq !== transSeq) return resolve();
+          if (t >= 1) return resolve();
+        }
       })
       .catch(() => resolve());
   });
@@ -168,22 +174,28 @@ async function shrinkDock(edge: DockEdge, w0: number, h0: number, seq: number, f
   const th = edge === "top" || edge === "bottom" ? SLIM : h0;
   if (content) { content.style.width = w0 + "px"; content.style.height = h0 + "px"; }
   const t0 = performance.now();
-  await new Promise<void>((resolve) => {
-    const iv = window.setInterval(() => {
-      if (seq !== transSeq) { window.clearInterval(iv); return resolve(); }
-      const t = Math.min(1, (performance.now() - t0) / dur);
-      const e = 1 - Math.pow(1 - t, 3);
-      const cw = Math.round(w0 + (tw - w0) * e);
-      const ch = Math.round(h0 + (th - h0) * e);
-      let px = fx, py = fy;
-      if (edge === "right") px = m.width - cw;
-      else if (edge === "bottom") py = m.height - ch;
-      void win!.setSize(new PhysicalSize(cw, ch));
-      void win!.setPosition(new PhysicalPosition(px, py));
-      if (content) setTuckTransform(edge, content, w0, h0, cw, ch);
-      if (t >= 1) { window.clearInterval(iv); return resolve(); }
-    }, 16);
-  });
+  // 逐帧等待 IPC 应用后再走下一帧（自节奏）：命令积压会让 JS 播完后窗口继续补帧，
+  // 视觉上细条最后慢慢溜回去；每帧 150ms 兜底防 IPC 卡死拖死状态机
+  for (;;) {
+    if (seq !== transSeq) return;
+    const t = Math.min(1, (performance.now() - t0) / dur);
+    const e = 1 - Math.pow(1 - t, 3);
+    const cw = Math.round(w0 + (tw - w0) * e);
+    const ch = Math.round(h0 + (th - h0) * e);
+    let px = fx, py = fy;
+    if (edge === "right") px = m.width - cw;
+    else if (edge === "bottom") py = m.height - ch;
+    if (content) setTuckTransform(edge, content, w0, h0, cw, ch);
+    await Promise.race([
+      Promise.all([
+        win.setSize(new PhysicalSize(cw, ch)).catch(() => { /* ignore */ }),
+        win.setPosition(new PhysicalPosition(px, py)).catch(() => { /* ignore */ }),
+      ]),
+      new Promise((r) => setTimeout(r, 150)),
+    ]);
+    if (seq !== transSeq) return;
+    if (t >= 1) break;
+  }
   // 收口：最终几何精确落定（带超时兜底，IPC 卡死也不阻塞状态机）
   const fw = edge === "left" || edge === "right" ? SLIM : w0;
   const fh = edge === "top" || edge === "bottom" ? SLIM : h0;
@@ -222,24 +234,29 @@ async function growFromEdge(edge: DockEdge, w: number, h: number, seq: number, d
     setTuckTransform(edge, content, w, h, sw, sh);
   }
   const t0 = performance.now();
-  await new Promise<void>((resolve) => {
-    const iv = window.setInterval(() => {
-      if (seq !== transSeq) { window.clearInterval(iv); return resolve(); }
-      const t = Math.min(1, (performance.now() - t0) / dur);
-      const e = 1 - Math.pow(1 - t, 3);
-      const cw = Math.round(sw + (w - sw) * e);
-      const ch = Math.round(sh + (h - sh) * e);
-      let px = sx, py = sy;
-      if (edge === "right") px = m.width - cw;
-      else if (edge === "left") px = 0;
-      else if (edge === "bottom") py = m.height - ch;
-      else py = 0;
-      void win!.setSize(new PhysicalSize(cw, ch));
-      void win!.setPosition(new PhysicalPosition(px, py));
-      if (content) setTuckTransform(edge, content, w, h, cw, ch);
-      if (t >= 1) { window.clearInterval(iv); return resolve(); }
-    }, 16);
-  });
+  // 逐帧等待 IPC 应用后再走下一帧（与 shrinkDock 同理，消除积压补帧尾巴）
+  for (;;) {
+    if (seq !== transSeq) return;
+    const t = Math.min(1, (performance.now() - t0) / dur);
+    const e = 1 - Math.pow(1 - t, 3);
+    const cw = Math.round(sw + (w - sw) * e);
+    const ch = Math.round(sh + (h - sh) * e);
+    let px = sx, py = sy;
+    if (edge === "right") px = m.width - cw;
+    else if (edge === "left") px = 0;
+    else if (edge === "bottom") py = m.height - ch;
+    else py = 0;
+    if (content) setTuckTransform(edge, content, w, h, cw, ch);
+    await Promise.race([
+      Promise.all([
+        win.setSize(new PhysicalSize(cw, ch)).catch(() => { /* ignore */ }),
+        win.setPosition(new PhysicalPosition(px, py)).catch(() => { /* ignore */ }),
+      ]),
+      new Promise((r) => setTimeout(r, 150)),
+    ]);
+    if (seq !== transSeq) return;
+    if (t >= 1) break;
+  }
   let ax = sx, ay = sy;
   if (edge === "right") ax = m.width - w;
   else if (edge === "left") ax = 0;
