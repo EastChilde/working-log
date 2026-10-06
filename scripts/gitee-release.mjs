@@ -56,13 +56,18 @@ if (!rel || !rel.id) {
 }
 
 // 3. 上传附件（端点是 attach_files 下划线；先删同名旧附件）
-const assets = rel.assets || [];
-for (const a of assets) {
+// 注意：release JSON 的 assets 数组不含 id，必须用 attach_files 列表端点取 id
+let attaches = [];
+try {
+  const lst = await api("GET", `/releases/${rel.id}/attach_files?access_token=${token}`);
+  attaches = Array.isArray(lst) ? lst : [];
+} catch (e) { console.log("list attach_files failed:", e.message); }
+for (const a of attaches) {
   if (a.name === assetName) {
     const to = withTimeout(60000);
     try {
       const d = await fetch(`${BASE}/releases/${rel.id}/attach_files/${a.id}?access_token=${token}`, { method: "DELETE", signal: to.signal });
-      console.log("old asset deleted:", a.id, d.status);
+      console.log("old asset deleted:", a.id, a.size, d.status);
     } finally { to.done(); }
   }
 }
