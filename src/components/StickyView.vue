@@ -496,18 +496,55 @@ async function snapToEdge() {
 }
 
 /** 程序内自定义缩放：窗口 resizable:false（系统缩放带会覆盖 8px 贴边条，hover 全失效），
- * 缩放改用 startResizeDragging 走 OS 原生 SC_SIZE 缩放循环；松手后记忆新几何 */
+ * 而 startResizeDragging 依赖系统 SC_SIZE 缩放循环，在无边框+resizable:false 下不生效。
+ * 改为手动跟随光标：mousedown 记初始几何，pointermove 每帧 setSize（自节奏：上一帧
+ * 应用完成后才处理下一帧，防 IPC 积压），pointerup 记忆新几何 */
+let resizing = false;
 async function startResize(dir: "East" | "West" | "South" | "SouthEast" | "SouthWest", e: MouseEvent) {
-  if (!win || e.button !== 0) return;
+  if (!win || e.button !== 0 || restoring) return;
   e.preventDefault();
   e.stopPropagation();
   cancelPeekHide();
   autoPeek.value = false; // 主动缩放 = 主动使用，之后不自动收回
   try {
-    await win.startResizeDragging(dir);
-    const [p, s] = [await win.outerPosition(), await win.innerSize()];
-    const cand = { x: p.x, y: p.y, w: s.width, h: s.height };
-    if (validGeom(cand)) { savedGeom = cand; persistPos(cand); lastExpandSize = { w: s.width, h: s.height }; }
+    const [p0, s0] = [await win.outerPosition(), await win.innerSize()];
+    resizing = true;
+    // 拖动时固定不动的边（西向拖 = 右边缘锚定；北向不支持，标题栏已承担移动）
+    const anchor = { right: p0.x + s0.width, bottom: p0.y + s0.height };
+    let busy = false;
+    const move = async () => {
+      if (busy || !resizing || !win) return;
+      busy = true;
+      try {
+        const c = await cursorPosition();
+        let w = s0.width, h = s0.height, x = p0.x;
+        if (dir === "East" || dir === "SouthEast") w = c.x - p0.x;
+        if (dir === "West" || dir === "SouthWest") w = anchor.right - c.x;
+        if (dir === "South" || dir === "SouthEast" || dir === "SouthWest") h = c.y - p0.y;
+        w = clamp(w, 240, 4000);
+        h = clamp(h, 300, 4000);
+        await win.setSize(new PhysicalSize(Math.round(w), Math.round(h)));
+        if (dir === "West" || dir === "SouthWest") {
+          // 钳制后重算 x，保证右边缘不动
+          await win.setPosition(new PhysicalPosition(Math.round(anchor.right - w), Math.round(p0.y)));
+        }
+      } catch { /* ignore */ } finally { busy = false; }
+    };
+    const up = () => {
+      window.removeEventListener("pointermove", move);
+      window.removeEventListener("pointerup", up);
+      resizing = false;
+      void (async () => {
+        try {
+          const [p, s] = [await win!.outerPosition(), await win!.innerSize()];
+          const cand = { x: p.x, y: p.y, w: s.width, h: s.height };
+          if (validGeom(cand)) { savedGeom = cand; persistPos(cand); lastExpandSize = { w: s.width, h: s.height }; }
+        } catch { /* ignore */ }
+      })();
+    };
+    window.addEventListener("pointermove", move);
+    window.addEventListener("pointerup", up);
+    await move(); // 立即一帧，手感即时
   } catch { /* ignore */ }
 }
 
