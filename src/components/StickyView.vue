@@ -96,10 +96,12 @@ function slideTo(tx: number, ty: number, seq: number = ++transSeq, dur = 220) {
 async function dockTo(edge: DockEdge) {
   if (!win) return;
   const seq = ++transSeq;
-  const mon = await currentMonitor();
+  const mon = await ipc(currentMonitor());
   if (!mon) return;
   const m = mon.size;
-  const [pos, size] = [await win.outerPosition(), await win.innerSize()];
+  const rs = await ipc(Promise.all([win.outerPosition(), win.innerSize()] as const));
+  if (!rs) return;
+  const [pos, size] = rs;
   let x: number, y: number, off: number;
 
   if (minimized.value) {
@@ -107,11 +109,11 @@ async function dockTo(edge: DockEdge) {
     const tw = edge === "left" || edge === "right" ? SLIM : lastExpandSize.w;
     const th = edge === "left" || edge === "right" ? lastExpandSize.h : SLIM;
     if (tw !== size.width || th !== size.height) {
-      try { await win.setSize(new PhysicalSize(tw, th)); } catch { /* ignore */ }
+      try { await ipc(win.setSize(new PhysicalSize(tw, th)), 400); } catch { /* ignore */ }
     }
     // 回读实际尺寸：若被系统最小尺寸钳制，按真实尺寸计算贴边位置
     let aw = tw, ah = th;
-    try { const asz = await win.innerSize(); aw = asz.width; ah = asz.height; } catch { /* ignore */ }
+    try { const asz = await ipc(win.innerSize(), 300); if (asz) { aw = asz.width; ah = asz.height; } } catch { /* ignore */ }
     if (edge === "right") { x = aw <= SLIM ? m.width - aw : m.width - SLIM; y = clamp(pos.y, 0, m.height - ah); off = y; }
     else if (edge === "left") { x = aw <= SLIM ? 0 : -(aw - SLIM); y = clamp(pos.y, 0, m.height - ah); off = y; }
     else if (edge === "top") { y = ah <= SLIM ? 0 : -(ah - SLIM); x = clamp(pos.x, 0, m.width - aw); off = x; }
@@ -170,7 +172,7 @@ function clearContentStyles() {
  * 内容固定像素尺寸抵消视口重排 —— 视觉上 = 便签原地缩进屏幕边缘 */
 async function shrinkDock(edge: DockEdge, w0: number, h0: number, seq: number, fx: number, fy: number, dur = 190) {
   if (!win) return;
-  const mon = await currentMonitor();
+  const mon = await ipc(currentMonitor());
   if (!mon) return;
   const m = mon.size;
   const content = stickyEl.value;
@@ -218,7 +220,7 @@ async function shrinkDock(edge: DockEdge, w0: number, h0: number, seq: number, f
 /** 展开生长：从条尺寸以边缘为锚生长到 (w×h)，内容从边缘侧滑出（shrinkDock 的逆动画） */
 async function growFromEdge(edge: DockEdge, w: number, h: number, seq: number, dur = 190) {
   if (!win) return;
-  const mon = await currentMonitor();
+  const mon = await ipc(currentMonitor());
   if (!mon) return;
   const m = mon.size;
   const content = stickyEl.value;
@@ -279,9 +281,12 @@ async function growFromEdge(edge: DockEdge, w: number, h: number, seq: number, d
 async function minimizeToEdge() {
   if (!win) return;
   try {
-    const [p, s] = [await win.outerPosition(), await win.innerSize()];
-    const cand = { x: p.x, y: p.y, w: s.width, h: s.height };
-    if (validGeom(cand)) { savedGeom = cand; persistPos(cand); lastExpandSize = { w: cand.w, h: cand.h }; }
+    const rs = await ipc(Promise.all([win.outerPosition(), win.innerSize()] as const));
+    if (rs) {
+      const [p, s] = rs;
+      const cand = { x: p.x, y: p.y, w: s.width, h: s.height };
+      if (validGeom(cand)) { savedGeom = cand; persistPos(cand); lastExpandSize = { w: cand.w, h: cand.h }; }
+    }
   } catch { /* ignore */ }
   try { await dockTo(dockEdge.value); } catch (e) { console.error("minimize failed", e); }
 }
@@ -291,6 +296,16 @@ function clamp(v: number | undefined, lo: number, hi: number): number {
   return Math.max(lo, Math.min(n, hi));
 }
 
+/** IPC 超时竞速：此环境窗口命令间歇卡死（实测），吸附/收回链路里任何无超时的
+ * await 一旦挂起，整条状态机链就静默丢失——表现为「贴边不吸附」「hover 不收回」。
+ * 超时/出错统一返回 null，调用方必须容错（放弃本次动作，靠重试/下一轮轮询收敛） */
+function ipc<T>(p: Promise<T>, ms = 400): Promise<T | null> {
+  return Promise.race([
+    p.catch(() => null),
+    new Promise<null>((r) => setTimeout(() => r(null), ms)),
+  ]);
+}
+
 /** 合并判边：光标距离与窗口矩形距离每边取 min，选最近的边。
  * 只看光标：窗口已贴边但手抓在标题栏中部（离边几十像素）→ 松手不吸附，「明明贴上了却没反应」；
  * 只看窗口：抓握点偏移会把「碰顶部」误判成贴其它近边（历史 bug）。
@@ -298,9 +313,11 @@ function clamp(v: number | undefined, lo: number, hi: number): number {
 async function nearestEdgeCombined(): Promise<{ edge: DockEdge; dist: number } | null> {
   if (!win) return null;
   try {
-    const mon = await currentMonitor();
+    const mon = await ipc(currentMonitor());
     if (!mon) return null;
-    const [pos, size] = [await win.outerPosition(), await win.innerSize()];
+    const rs = await ipc(Promise.all([win.outerPosition(), win.innerSize()] as const));
+    if (!rs) return null;
+    const [pos, size] = rs;
     const mx = mon.position.x, my = mon.position.y;
     const wd: Record<DockEdge, number> = {
       left: pos.x - mx,
@@ -314,7 +331,8 @@ async function nearestEdgeCombined(): Promise<{ edge: DockEdge; dist: number } |
       return { edge, dist };
     };
     try {
-      const c = await cursorPosition();
+      const c = await ipc(cursorPosition());
+      if (!c) return pick(wd); // 光标读不到：退回纯窗口矩形判定，至少能吸附
       const cd: Record<DockEdge, number> = {
         left: c.x - mx,
         right: mx + mon.size.width - c.x,
@@ -349,14 +367,15 @@ async function restoreFromEdge() {
     await growFromEdge(dockEdge.value, w, h, seq);
     if (seq !== transSeq) return;
     try {
-      const mon = await currentMonitor();
+      const mon = await ipc(currentMonitor());
       if (mon) {
         let x: number, y: number;
         if (g) {
           x = clamp(g.x, 0, Math.max(0, mon.size.width - w));
           y = clamp(g.y, 0, Math.max(0, mon.size.height - h));
         } else {
-          const pos = await win.outerPosition();
+          const pos = await ipc(win.outerPosition());
+          if (!pos) throw new Error("pos timeout");
           x = dockEdge.value === "left" ? 24 : dockEdge.value === "right" ? mon.size.width - w - 24 : pos.x;
           y = dockEdge.value === "top" ? 24 : dockEdge.value === "bottom" ? mon.size.height - h - 24 : pos.y;
           x = clamp(x, 0, Math.max(0, mon.size.width - w));
@@ -419,14 +438,16 @@ function startWindowDrag(e: MouseEvent, onDrop: (moved: boolean) => void) {
     onDrop(changed);
   };
   win.outerPosition()
+    .catch(() => null)
     .then((p0) => {
-      if (seq !== nativeDragSeq) return;
+      if (!p0 || seq !== nativeDragSeq) return;
       lastX = p0.x;
       lastY = p0.y;
       iv = window.setInterval(async () => {
         if (done) return;
         try {
-          const p = await win!.outerPosition();
+          const p = await ipc(win!.outerPosition(), 200);
+          if (!p) return;
           if (p.x !== lastX || p.y !== lastY) { changed = true; lastX = p.x; lastY = p.y; stable = 0; }
           else if (changed && ++stable >= 3) finish();
         } catch { /* ignore */ }
@@ -435,8 +456,8 @@ function startWindowDrag(e: MouseEvent, onDrop: (moved: boolean) => void) {
       // 轮询从未观察到移动（changed 恒 false），仅靠轮询会误判"未移动"导致贴边吸附永不触发
       win!.startDragging().then(async () => {
         try {
-          const p = await win!.outerPosition();
-          if (p.x !== p0.x || p.y !== p0.y) changed = true;
+          const p = await ipc(win!.outerPosition(), 300);
+          if (p && (p.x !== p0.x || p.y !== p0.y)) changed = true;
         } catch { /* ignore */ }
         finish();
       }, finish);
@@ -452,13 +473,14 @@ function onHeadDown(e: MouseEvent) {
   startWindowDrag(e, async (moved) => {
     if (!moved) return;
     try {
-      const pos = await win!.outerPosition();
-      const size = await win!.innerSize();
+      const rs = await ipc(Promise.all([win!.outerPosition(), win!.innerSize()] as const));
+      if (!rs) return;
+      const [pos, size] = rs;
       // 合并光标+窗口矩形判边：窗口贴到边（哪怕手抓在标题栏中部）就吸附
       const near = await nearestEdgeCombined();
       if (near && near.dist < SNAP_PX) {
         await snapToEdge();
-      } else {
+      } else if (near) {
         const cand = { x: pos.x, y: pos.y, w: size.width, h: size.height };
         if (validGeom(cand)) { savedGeom = cand; persistPos(cand); }
       }
@@ -481,18 +503,21 @@ async function snapToEdge() {
   // （拉手拖拽换边时已 minimized，窗口是展开尺寸，不受影响）
   if (!minimized.value) {
     try {
-      const [p, s] = [await win.outerPosition(), await win.innerSize()];
-      savedGeom = { x: p.x, y: p.y, w: s.width, h: s.height };
-      persistPos(savedGeom);
-      lastExpandSize = { w: s.width, h: s.height };
+      const rs = await ipc(Promise.all([win.outerPosition(), win.innerSize()] as const));
+      if (rs) {
+        const [p, s] = rs;
+        savedGeom = { x: p.x, y: p.y, w: s.width, h: s.height };
+        persistPos(savedGeom);
+        lastExpandSize = { w: s.width, h: s.height };
+      }
     } catch { /* ignore */ }
   }
-  const mon = await currentMonitor();
+  const mon = await ipc(currentMonitor());
   if (!mon) return;
   // 合并光标+窗口矩形判边（贴到边就吸附；抓握偏移不再误判边）
   const near = await nearestEdgeCombined();
-  const edge: DockEdge = near ? near.edge : "right";
-  await dockTo(edge);
+  if (!near) return; // IPC 全超时：放弃本次吸附，不硬猜边（宁可不吸也不能吸错边）
+  await dockTo(near.edge);
 }
 
 /** 程序内自定义缩放：窗口 resizable:false（系统缩放带会覆盖 8px 贴边条，hover 全失效），
@@ -507,7 +532,9 @@ async function startResize(dir: "East" | "West" | "South" | "SouthEast" | "South
   cancelPeekHide();
   autoPeek.value = false; // 主动缩放 = 主动使用，之后不自动收回
   try {
-    const [p0, s0] = [await win.outerPosition(), await win.innerSize()];
+    const rs0 = await ipc(Promise.all([win.outerPosition(), win.innerSize()] as const));
+    if (!rs0) return;
+    const [p0, s0] = rs0;
     resizing = true;
     // 拖动时固定不动的边（西向拖 = 右边缘锚定；北向不支持，标题栏已承担移动）
     const anchor = { right: p0.x + s0.width, bottom: p0.y + s0.height };
@@ -516,17 +543,19 @@ async function startResize(dir: "East" | "West" | "South" | "SouthEast" | "South
       if (busy || !resizing || !win) return;
       busy = true;
       try {
-        const c = await cursorPosition();
-        let w = s0.width, h = s0.height, x = p0.x;
-        if (dir === "East" || dir === "SouthEast") w = c.x - p0.x;
-        if (dir === "West" || dir === "SouthWest") w = anchor.right - c.x;
-        if (dir === "South" || dir === "SouthEast" || dir === "SouthWest") h = c.y - p0.y;
-        w = clamp(w, 240, 4000);
-        h = clamp(h, 300, 4000);
-        await win.setSize(new PhysicalSize(Math.round(w), Math.round(h)));
-        if (dir === "West" || dir === "SouthWest") {
-          // 钳制后重算 x，保证右边缘不动
-          await win.setPosition(new PhysicalPosition(Math.round(anchor.right - w), Math.round(p0.y)));
+        const c = await ipc(cursorPosition(), 200);
+        if (c) {
+          let w = s0.width, h = s0.height, x = p0.x;
+          if (dir === "East" || dir === "SouthEast") w = c.x - p0.x;
+          if (dir === "West" || dir === "SouthWest") w = anchor.right - c.x;
+          if (dir === "South" || dir === "SouthEast" || dir === "SouthWest") h = c.y - p0.y;
+          w = clamp(w, 240, 4000);
+          h = clamp(h, 300, 4000);
+          await ipc(win.setSize(new PhysicalSize(Math.round(w), Math.round(h))), 200);
+          if (dir === "West" || dir === "SouthWest") {
+            // 钳制后重算 x，保证右边缘不动
+            await ipc(win.setPosition(new PhysicalPosition(Math.round(anchor.right - w), Math.round(p0.y))), 200);
+          }
         }
       } catch { /* ignore */ } finally { busy = false; }
     };
@@ -536,7 +565,9 @@ async function startResize(dir: "East" | "West" | "South" | "SouthEast" | "South
       resizing = false;
       void (async () => {
         try {
-          const [p, s] = [await win!.outerPosition(), await win!.innerSize()];
+          const rs = await ipc(Promise.all([win!.outerPosition(), win!.innerSize()] as const));
+          if (!rs) return;
+          const [p, s] = rs;
           const cand = { x: p.x, y: p.y, w: s.width, h: s.height };
           if (validGeom(cand)) { savedGeom = cand; persistPos(cand); lastExpandSize = { w: s.width, h: s.height }; }
         } catch { /* ignore */ }
@@ -666,7 +697,7 @@ onMounted(() => {
       if (restoring || minimized.value || clamping) return;
       if (s.width >= 240 && s.height >= 300) return;
       clamping = true;
-      try { await win.setSize(new PhysicalSize(Math.max(240, s.width), Math.max(300, s.height))); } catch { /* ignore */ }
+      try { await ipc(win.setSize(new PhysicalSize(Math.max(240, s.width), Math.max(300, s.height))), 400); } catch { /* ignore */ }
       clamping = false;
     });
   }
@@ -679,10 +710,10 @@ onMounted(() => {
       // 贴边吸附会把几乎贴边的松手位置存入记忆，原样恢复会让便签几乎全在屏外（看起来像消失）
       void (async () => {
         try {
-          const mon = await currentMonitor();
+          const mon = await ipc(currentMonitor());
           const x = mon ? clamp(g.x, 0, Math.max(0, mon.size.width - g.w)) : g.x;
           const y = mon ? clamp(g.y, 0, Math.max(0, mon.size.height - g.h)) : g.y;
-          await win.setPosition(new PhysicalPosition(x, y));
+          await ipc(win.setPosition(new PhysicalPosition(x, y)), 400);
         } catch {
           void win.setPosition(new PhysicalPosition(g.x, g.y)).catch(() => { /* ignore */ });
         }
