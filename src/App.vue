@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, onUnmounted, ref } from "vue";
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import { useTaskStore, todayKey, inSubtree } from "./stores/tasks";
+import { useTaskStore, todayRef, inSubtree } from "./stores/tasks";
 import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { TAG_HEX, TAG_COLORS } from "./types";
 import type { Tag, TagColor } from "./types";
@@ -15,8 +15,9 @@ const store = useTaskStore();
 const view = ref<"cal" | "list" | "hist">("cal");
 const year = ref(new Date().getFullYear());
 const month = ref(new Date().getMonth() + 1);
-const selected = ref(todayKey());
-const today = todayKey();
+const selected = ref(todayRef.value);
+/** 响应式「今天」：长驻窗口跨天后自动刷新（todayRef 由 store 内 ticker 维护） */
+const today = computed(() => todayRef.value);
 
 onMounted(() => store.initSync());
 
@@ -27,18 +28,18 @@ function shiftMonth(n: number) {
 }
 function goToday() {
   const d = new Date();
-  year.value = d.getFullYear(); month.value = d.getMonth() + 1; selected.value = today;
+  year.value = d.getFullYear(); month.value = d.getMonth() + 1; selected.value = today.value;
 }
 
 const quickInput = ref("");
 async function quickAdd() {
   if (!quickInput.value.trim()) return;
-  await store.add(quickInput.value, selected.value || today);
+  await store.add(quickInput.value, selected.value || today.value);
   quickInput.value = "";
 }
 
-const sideToday = computed(() => store.tasks.filter((t) => t.created_at === today && t.status !== "done").length);
-const sideStay = computed(() => store.openTasks.filter((t) => t.created_at < today).length);
+const sideToday = computed(() => store.tasks.filter((t) => t.created_at === today.value && t.status !== "done").length);
+const sideStay = computed(() => store.openTasks.filter((t) => t.created_at < today.value).length);
 const inboxCount = computed(() => 0);
 
 /** 标签下任务总数（侧栏角标）——含已完成；父标签聚合整棵子树 */

@@ -1,11 +1,12 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from "vue";
-import { useTaskStore, todayKey } from "../stores/tasks";
+import { useTaskStore, todayRef } from "../stores/tasks";
 import { getCurrentWindow, currentMonitor, cursorPosition, PhysicalPosition, PhysicalSize } from "@tauri-apps/api/window";
 import type { Task } from "../types";
 
 const store = useTaskStore();
-const today = todayKey();
+/** 响应式「今天」——便签窗口常驻，跨天自动刷新 */
+const today = computed(() => todayRef.value);
 const input = ref("");
 
 const isTauri = "__TAURI_INTERNALS__" in window;
@@ -581,9 +582,9 @@ async function startResize(dir: "East" | "West" | "South" | "SouthEast" | "South
 
 /* ===== 紧急程度排序视图 ===== */
 /** 滞留天数 */
-const stayDays = (t: Task) => Math.floor((Date.parse(today) - Date.parse(t.created_at)) / 86400000);
+const stayDays = (t: Task) => Math.floor((Date.parse(today.value) - Date.parse(t.created_at)) / 86400000);
 /** 预计结束日期距今天数 */
-const dueDays = (t: Task) => Math.round((Date.parse(t.deadline + "T00:00:00") - Date.parse(today + "T00:00:00")) / 86400000);
+const dueDays = (t: Task) => Math.round((Date.parse(t.deadline + "T00:00:00") - Date.parse(today.value + "T00:00:00")) / 86400000);
 /** 已逾期（未完成且预计结束日期已过） */
 const isOverdue = (t: Task) => !!t.deadline && t.status !== "done" && dueDays(t) < 0;
 /** 紧急程度 → 样式类（与主界面红黄绿同源） */
@@ -636,7 +637,7 @@ const doneToday = computed(() => store.doneToday);
 
 async function add() {
   if (!input.value.trim()) return;
-  await store.add(input.value, today);
+  await store.add(input.value, today.value);
   input.value = "";
 }
 

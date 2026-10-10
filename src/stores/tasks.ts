@@ -1,4 +1,5 @@
 import { defineStore } from "pinia";
+import { ref } from "vue";
 import { repo } from "../db";
 import type { Tag, TagColor, Task, TaskNode, TaskStatus } from "../types";
 
@@ -6,6 +7,23 @@ function todayKey(): string {
   const d = new Date();
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
 }
+
+/**
+ * 响应式的「今天」——修复长驻窗口跨天后日期过期的问题：
+ * 每 30s 轮询一次 + 窗口获焦/页面可见时立即检查，日期变化自动触发全界面刷新。
+ */
+export const todayRef = ref(todayKey());
+function startTodayTicker() {
+  if (typeof window === "undefined" || typeof document === "undefined") return;
+  const check = () => {
+    const k = todayKey();
+    if (k !== todayRef.value) todayRef.value = k;
+  };
+  window.setInterval(check, 30_000);
+  window.addEventListener("focus", check);
+  document.addEventListener("visibilitychange", check);
+}
+startTodayTicker();
 
 const isTauri = typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
 

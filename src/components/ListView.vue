@@ -1,16 +1,14 @@
 <script setup lang="ts">
 import { computed } from "vue";
-import { useTaskStore } from "../stores/tasks";
+import { useTaskStore, todayRef } from "../stores/tasks";
 import { daysBetween, fmtCn } from "../utils/date";
 import type { Task } from "../types";
 
 const store = useTaskStore();
 const emit = defineEmits<{ (e: "open", id: string): void }>();
 
-const today = computed(() => {
-  const d = new Date();
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
-});
+/** 响应式「今天」——跨天自动刷新（原无依赖 computed 只会计算一次，跨天失效） */
+const today = computed(() => todayRef.value);
 
 /** 往日滞留（未完成且创建日早于今天），按创建时间正序（跟随侧栏标签筛选） */
 const stay = computed(() =>
